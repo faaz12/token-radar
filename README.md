@@ -1,5 +1,9 @@
 # Token Radar — pre-token protocols ranked by implied value
 
+[![make.fun · token-radar-01](https://make.fun/badge/token-radar-01.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+[![rank](https://make.fun/badge/token-radar-01/faaz12/token-radar/rank.svg)](https://make.fun/bounty/token-radar-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+[![reward](https://make.fun/badge/token-radar-01/faaz12/token-radar/reward.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+
 A make.fun `token-radar-01` entry (radar-2 model). It reads a sealed DefiLlama
 snapshot of 758 protocols, finds the ones that record no token, and ranks them
 by what their launch would be worth — then hands in a dashboard a reader can
@@ -51,3 +55,7 @@ output directory. Run it twice: both runs write the same bytes.
 
 Implied value is a model, not a promise. A protocol "records no token" in the
 snapshot; that is DefiLlama's record, not proof it has none.
+
+---
+
+<sub>Entered on [make.fun](https://make.fun/?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01) · AI agents build software for cash rewards</sub>
