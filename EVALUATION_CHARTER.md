@@ -1,17 +1,36 @@
-# Evaluation Charter v1.1 — Token Radar (radar-8)
+# Evaluation Charter v1.2 — Token Radar (radar-9)
 
-Locked **before** fitting radar-8. Any change after results creates a new
-charter version and labels the prior results **exploratory**. Radar-7 numbers
-were computed under charter v1.0; the evaluation procedure changed in v1.1
-(undated hard-gate, growth removed from the production features, EV safety
-margin, prespecified model selection, launch-probability audit), so radar-7
-numbers are **exploratory under v1.1** and must not be quoted as v1.1 results.
+Locked **before** fitting radar-9. Any change after results creates a new
+charter version and labels the prior results **exploratory**. Radar-8 numbers
+were computed under charter v1.1; the evaluation procedure changed in v1.2
+(simulation-based EV, base-rate fallback for launch odds, gate test, OOD
+detection, nested reconciliation, floor-sensitivity diagnostic), so radar-8
+numbers are **exploratory under v1.2** and must not be quoted as v1.2 results.
+Radar-8 is frozen in `hidden_files/radar-8-freeze/` (board, data, dossier,
+metrics, CHARTER-v1.1.md, FREEZE.md, snapshot sha256
+42a71213519479f3a180cc5010cbbf6bd18a2447fa0ad29e4c5122b6c9184393).
+
+## Why v1.2 exists — the defect it fixes
+
+Under v1.1 the EV audit mixed two different distributions and presented them
+as one. For Polymarket the audit showed "EV at P25 value" +$22,148 next to
+"P(negative return)" 59.2%. Both numbers were computed correctly, but they were
+not statistics of the same distribution: the P25 figure was the EV at the 25th
+percentile of the *value* distribution **conditional on launch**, while the
+59.2% was the *unconditional* probability of a negative net return, dominated
+by the 58.4% non-launch mass (1 − p_L, p_L = 0.4161). If 59.2% of outcomes are
+negative, the 25th percentile of the net-return distribution must be negative —
+so one of the two statistics was mislabeled. The P(negative) was right; the
+"P25 EV" was mislabeled. v1.2 recomputes **every** EV statistic from **one**
+seeded simulation array per protocol (the full mixture: launch Bernoulli ×
+lognormal value), and labels conditional-on-launch value scenarios explicitly
+as conditional, never as quantiles of the net return.
 
 ## Question, target, grain, decision time
 
 - **Question:** which pre-token protocols are worth farming for a token launch,
   and at what value if they launch?
-- **Target — definition (v1.1, precise):** `log10(market cap in USD)` as
+- **Target — definition (v1.2, precise):** `log10(market cap in USD)` as
   recorded in the sealed snapshot at the snapshot date (`as_of` 2026-11-14).
   Market cap here means circulating-supply × price at the snapshot time, as
   recorded by the snapshot's own source (DefiLlama / CoinGecko as carried in
@@ -26,10 +45,10 @@ numbers are **exploratory under v1.1** and must not be quoted as v1.1 results.
   into one target. Any comparison of this model's error rate against another
   entry's error rate is valid only if target, dates, and error definition
   match; the radar-7 comparison of 2.77x against the leader's reported 3.21x
-  is **not claimed** under v1.1 because that match has not been established.
+  is **not claimed** under v1.2 because that match has not been established.
 - **Row grain:** one protocol. **Decision time T:** the snapshot date; every
   feature is the snapshot's own value at T.
-- **Eligible population (v1.1, hard-gated):** DATED live-token comparables
+- **Eligible population (v1.2, hard-gated):** DATED live-token comparables
   only — a token trading, TVL and market cap positive, not a CEX, passing the
   board's rankability rule, AND with a recorded listing date. n = 70.
   The 22 UNDATED comparables are **physically excluded from every fitting,
@@ -37,7 +56,9 @@ numbers are **exploratory under v1.1** and must not be quoted as v1.1 results.
   cross-validation, conformal calibration, OLS/ridge baselines, bootstrap).
   They are scored only as a reference table with the dated-only full fit, and
   their error is a diagnostic, never a headline and never mixed into any
-  fitted quantity.
+  fitted quantity. When shown, undated rows are labeled **"unsupported
+  estimates"**: no calibrated confidence band is attached to them, and no
+  verdict is derived from them.
 
 ## Splits, ordering, grouping, embargo
 
@@ -55,7 +76,7 @@ numbers are **exploratory under v1.1** and must not be quoted as v1.1 results.
   fixed-seed shuffle (seed 20261118) on dated comps only.
 - **Grouping:** one row per protocol; no protocol appears in both sides of any
   split. A protocol with no listing date has no position in time and is never
-  placed in a walk-forward test set — and under v1.1 it is in no training set
+  placed in a walk-forward test set — and under v1.2 it is in no training set
   either.
 - **Embargo / purge gap: 30 days.** Train rows listed within 30 days before a
   test window's start are dropped. Locked, not tuned per fold.
@@ -68,14 +89,14 @@ numbers are **exploratory under v1.1** and must not be quoted as v1.1 results.
 - **Secondary:** WF 70/30 dated, stratified dated / undated-reference, 5-fold
   CV, R², OLS and ridge baselines on identical rows and folds, seasoning
   Brier / log-loss / ECE (fold-local fits), conformal coverage at 50/80/90%
-  nominal, P90 tail error on the selection folds.
+  nominal, P90 tail error on the selection folds, the EV simulation audit,
+  the gate test, the OOD report, and the floor-sensitivity diagnostic.
 - **Baselines:** the old OLS model on the same features and splits; a ridge
   baseline (fixed λ = 1.0 on the standardized log-TVL slope, see below — a
   mild shrinkage, not a tuned model); the base-rate launch rate for the
   seasoning curve.
 - **Success rule:** nested pooled < 0.602 dex (4x) AND WF 70/30 < 0.602 dex,
-  on dated comps. (Radar-7 under v1.0: nested 0.3728, WF 0.4427 — both passed;
-  those numbers are exploratory under v1.1.)
+  on dated comps.
 - **Headline:** dated-only numbers are the headline. Undated is a reference
   diagnostic only.
 
@@ -98,30 +119,29 @@ numbers are **exploratory under v1.1** and must not be quoted as v1.1 results.
   The selected estimator, the full candidate table, and the rule outcome are
   published in the validation. The production fit uses the selected estimator.
 - **Size floor: $25M, locked.** No floor dominates the grid; the floor is a
-  stability constant, not a tuned optimum. (v1.0 evidence stands.)
-- **Growth carry: REMOVED from the production model (v1.1).** The production
-  features are `[1, log10(TVL + $25M)]` only. Evidence: the growth
-  coefficient is unstable across folds (signed: +0.73/+0.67/+0.84/+1.00/+0.19
-  vs −0.07 full fit, radar-7), and no growth variant improves held-out error.
-  A **growth diagnostic** is run separately and reported: a Huber fit with a
-  signed `log(1 + winsor(change_7d, −50%, +200%))` term, no clamp, on the
-  identical splits. Growth returns to production only if that diagnostic
-  improves the selection metric by > 0.01 dex — it does not under v1.0
-  evidence (signed: WF 0.4427 tie, nested 0.3728 tie, CV 0.5593 worse), so
-  production has no growth term. 30d/90d growth cannot be built — the sealed
+  stability constant, not a tuned optimum. (v1.0 evidence stands; v1.2 adds a
+  floor-sensitivity diagnostic — see below — which reports, but does not
+  change, the floor.)
+- **Growth carry: REMOVED from the production model (v1.1, carried).** The
+  production features are `[1, log10(TVL + $25M)]` only. A **growth
+  diagnostic** is run separately and reported: a Huber fit with a signed
+  `log(1 + winsor(change_7d, −50%, +200%))` term, no clamp, on the identical
+  splits. Growth returns to production only if that diagnostic improves the
+  selection metric by > 0.01 dex. 30d/90d growth cannot be built — the sealed
   snapshot carries only `change_7d`.
 - **Category/chain adjustments: post-hoc shrunk median residuals
   (n/(n+3)), kept.** (v1.0 evidence stands; a joint category intercept was
   tested and rejected.)
-- **Missingness: handling (d) — hard-gate (v1.1).** Undated comps are
+- **Missingness: handling (d) — hard-gate (v1.1, carried).** Undated comps are
   excluded from all fitting and calibration. Mechanism is structural/MNAR:
   undated comps are legacy protocols whose listing dates were never recorded;
-  their median residual is −0.228 dex (systematically over-predicted) vs
-  −0.021 for dated, and their stratified-test error was 0.6962 dex (4.97x)
-  vs dated 0.5454 under v1.0. Under v1.1 they are scored only as a reference
-  table with the dated-only full fit; the dated-only band's coverage on them
-  is reported as a diagnostic with the bias analysis, not as a calibration
-  result.
+  their median residual is −0.277 dex (systematically over-predicted) vs
+  dated, and their stratified-test error was 0.6962 dex (4.97x) vs dated
+  0.5454 under v1.0. Under v1.2 they are scored only as a reference table
+  with the dated-only full fit, labeled "unsupported estimates"; the
+  dated-only band's coverage on them is reported as a diagnostic with the
+  bias analysis, not as a calibration result, and no calibrated band is
+  attached to any undated row.
 - **Value band: cross-conformal on dated-only CV residuals (70), not
   bootstrap-only.** Half-width = the finite-sample-corrected α quantile of
   absolute out-of-fold residuals from the 5-fold CV (dated only), k =
@@ -130,46 +150,104 @@ numbers are **exploratory under v1.1** and must not be quoted as v1.1 results.
   A strict split-conformal check (train 70% / calibration 15% / test 15%,
   dated only, train purged) is reported as a secondary check. The old
   bootstrap SD stays as a diagnostic only.
-- **Seasoning (launch odds):** logistic fit of has-token on log10(age+1).
-  Fold-local refits are used for validation; the full fit (all 645 dated
-  protocols) is used for the board only. Audit (v1.1): a reliability diagram
-  (fixed predicted-probability bins with n and actual launch rate per bin),
-  a bootstrap 95% CI for the Brier and log-loss improvement over the base
-  rate (2000 resamples, seed 20261107, resampling pooled test rows),
-  ROC-AUC and PR-AUC on the pooled fold-local predictions, and per-fold
-  mean-predicted vs actual rates. **Platt calibration:** a logistic
-  recalibration (Platt scaling on logit(p)) is fitted on the fold-local
-  predictions from cutoffs 50/60/70 (150 rows) and tested on cutoffs 80/90
-  (100 rows, untouched for this decision). It is adopted **only if** it beats
-  the uncalibrated curve on BOTH Brier and log-loss on that test; otherwise
-  the raw curve stands and the failure is reported honestly — no added
-  complexity without evidence. Caveat (unchanged): token status is measured
-  at as_of for every protocol, so the curve is a cross-sectional association
-  at as_of, not a true historical hazard — a protocol listed before a cutoff
-  that launched after it counts as has-token in the training fit. Under v1.0
-  the curve beat the base rate only slightly out of sample (pooled Brier
-  0.1194 vs 0.1233, log-loss 0.4097 vs 0.4164, ECE 0.0648) — verdict
-  usable-with-caveats, not well-calibrated.
-- **Verdicts: expected net return with a safety margin (v1.1).**
-  EV = p_L × 0.25% × value-if-launches − plan cost, where 0.25% is the
-  farmer's assumed share of the launch value (an assumption, stated, not
-  verified from data). **FARM iff EV at the central value > 0 AND EV at the
-  P25 value > 0** (P25 = value at predictedLog − 50% band half-width: the
-  farm must pay even at the lower quartile of the value band). **Marginal**
-  iff EV central > 0 but EV P25 ≤ 0, or EV central ≤ 0 with break-even odds
-  ≤ 33%. **Skip** otherwise. The old break-even-only rule and the v1.0
-  EV>0-only rule both called rows FARM that the margin rule demotes; the
-  demotions are listed in the EV audit table. Every FARM row carries an
-  end-to-end audit: EV at conservative (P25) / central / optimistic (P75)
-  value, probability of a negative return, P10 value and EV at P10, and the
-  assumptions the EV rests on: 0.25% farmer share (assumed); exit value =
-  snapshot market cap (no slippage, no liquidity, no lockup modeled — the
-  snapshot carries no unlock schedule, no order-book depth, and no fee
-  data, so none is invented); farming costs = gas per chain + opportunity
-  cost of the deposit at 10% annual over the hold window; hold days by age
-  (60 < 180d, 45 < 365d, else 30). Probability of a negative return assumes
-  log10(value) is normal with σ = (50% band half-width) / 0.6745 around the
-  prediction, and counts a non-launch as a full loss of the plan cost.
+- **Seasoning (launch odds) — v1.2: the base rate is the board's default.**
+  The seasoning curve (logistic fit of has-token on log10(age+1), 645 dated
+  protocols) is validated with fold-local refits exactly as in v1.1, and its
+  audit (reliability bins, bootstrap CIs, ROC/PR AUC, Platt test) is still
+  published — but it does **not** set any board launch odds unless it passes
+  the prespecified adoption test below. The adoption test (prespecified,
+  before results): the curve is adopted for the board **only if** it beats
+  the base rate on **both** Brier and log-loss on the untouched chronological
+  test (the fold-local predictions from cutoffs 80/90, n = 100) **and** the
+  bootstrap 95% CI for the Brier improvement over the base rate excludes
+  zero. Under v1.1 evidence the curve fails both: on the untouched test the
+  base rate beats even the Platt-calibrated curve (Brier 0.1131 vs 0.1144,
+  log-loss 0.3864 vs 0.3930), and the Brier-improvement CI is [−0.0067,
+  +0.0025], straddling zero — so the curve is **not predictive enough to
+  beat a constant**, and the board uses the base rate (0.1643) as p_L for
+  every row until a better model validates. The Platt recalibration is
+  adopted only if it beats the **base rate** (not merely the raw curve) on
+  both Brier and log-loss on that same untouched test; under v1.1 evidence it
+  does not, so no Platt parameters are applied to the board. The curve is
+  kept as a diagnostic because it ranks by age where a constant cannot, not
+  because it beats the base rate on the latest period. Caveat (unchanged):
+  token status is measured at as_of for every protocol, so the curve is a
+  cross-sectional association at as_of, not a true historical hazard.
+- **Verdicts: expected net return from ONE simulation array, with a stress
+  test and a tested gate (v1.2).** For each board row, one seeded simulation
+  (N = 20,000 draws; seed = FNV-1a hash of the slug, so the draws are
+  deterministic and order-independent) produces the net-return array: each
+  draw takes u ~ Uniform(0,1) and z ~ Normal(0,1); the protocol launches iff
+  u < p_L; if it launches, log10(value) = predictedLog + σ·z with
+  σ = bandHalfwidth / 0.6745 (×1.5 for out-of-distribution rows — see below)
+  and value clamped to [$1, $100B]; the draw's net return is
+  0.25% × value − plan cost if it launches, else −plan cost. **Every** EV
+  statistic is computed from that one array: ev_mean (the expected net
+  return — the "central EV"), ev_p10 / ev_p25 / ev_p50 / ev_p75 / ev_p90,
+  and p_negative = mean(ev < 0). Expected value and median value are
+  different numbers and are labeled as such; the central EV **is** the mean.
+  The conditional-on-launch value scenarios are reported separately and
+  labeled explicitly as conditional — "EV at the P25 value IF it launches"
+  is a point evaluation at the P25 value, **not** the 25th percentile of the
+  net return — and are never presented next to p_negative as if they shared
+  a distribution. The analytic p_negative from v1.1 (1 − p_L × P(value >
+  cost / 0.25%)) is reported as a cross-check and must agree with the
+  simulated p_negative within Monte Carlo error (±0.02 at N = 20,000).
+  - **Stress test (v1.2):** every EV-audit row carries ev_mean under three
+    launch-probability assumptions, all from the **same** (u, V) draw pairs
+    (only the launch threshold changes): (1) base-rate (the adopted p_L),
+    (2) Platt-calibrated seasoning curve (the v1.1 model assumption, for
+    comparison only), (3) conservative lower-bound = the 2.5th percentile of
+    a 2000-resample bootstrap of the base rate over the 645 dated protocols
+    (fixed seed 20261107). **FARM requires the adopted gate to pass under
+    the conservative assumption**; a row that passes under the base rate but
+    not under the conservative assumption is demoted to MARGINAL.
+  - **Gate test (v1.2, prespecified before results):** two gate variants are
+    tested honestly on the corrected statistics, both under the adopted
+    (base-rate) p_L:
+    (a) the current rule — FARM iff ev_mean > 0 **and** ev_p25 > 0;
+    (b) the Gemini proposal — FARM iff ev_mean > 0 **and**
+    (ev_p50 − ev_p25) ≤ 0.5 × (ev_p75 − ev_p50), all from the same array.
+    **Choice rule (prespecified, documented before the gate test runs):**
+    adopt the variant that (i) farms at least one row **and** (ii) rejects at
+    least one row with ev_mean > 0 through its additional condition (the gate
+    must be a real filter — it must both fire and filter). If exactly one
+    variant satisfies (i) and (ii), adopt it. If both satisfy (i) and (ii),
+    adopt the one with the lower maximum P(negative) among its FARM rows. If
+    **neither** satisfies (i) and (ii), adopt variant (a) — the pre-existing
+    charter rule — and report the resulting FARM count, even if zero. The
+    FARM count is never a target and never a reason to change the rule. The
+    gate-test table (both variants, FARM counts, maximum P(negative) among
+    FARM rows, rows farmed) is published in the validation.
+  - **Marginal** iff the row is not FARM but ev_mean > 0 under the adopted
+    p_L, or ev_mean ≤ 0 with break-even odds ≤ 33%. **Skip** otherwise. The
+    0.25% farmer share, the exit at snapshot market cap, and the absence of
+    slippage, liquidity, and lockup modeling are assumptions, not
+    measurements (unchanged from v1.1).
+- **Out-of-distribution detection (v1.2):** every board prediction is checked
+  against the training domain (the 70 dated comps): the set of categories,
+  the set of main chains, the [min, max] range of log10(TVL + $25M), and the
+  [min, max] range of age in days. A row is flagged out-of-distribution iff
+  any of: its main chain never appears in training, its category never
+  appears in training, its log10(TVL + $25M) is outside the training range,
+  its age is outside the training range (or unknown), or its nearest
+  comparable is more than 0.5 dex away in log10(TVL + $25M). An
+  out-of-distribution row gets an **extrapolation warning**, a band half-width
+  **×1.5** for its EV simulation (a wider band, not a different model), and
+  confidence label **'extrapolation'** (never 'in-distribution'). No
+  out-of-distribution prediction carries the same confidence as an
+  in-distribution one.
+- **TVL floor sensitivity (v1.2, diagnostic — the floor stays locked):** for
+  each floor in {$0M, $10M, $25M, $50M, $100M}, report the full-fit
+  coefficients (intercept, coef_log_tvl) on the 70 comps with the selected
+  estimator, the selection-pooled metric (nested 50–80, identical folds),
+  and the board ranking change vs the $25M board (Spearman ρ on implied
+  value, top-20 overlap, top-10 changes). Also report a training-fold-only
+  choice test: for each nested fold, choose the floor by 5-fold CV **within
+  that fold's training set only**, evaluate the chosen floor on the fold's
+  test set, and pool — this is what choosing the floor inside training folds
+  would actually buy. The floor is **not** changed by this diagnostic in
+  radar-9: it stays $25M, a stability constant.
 
 ## Tuning boundary and final holdout
 
@@ -199,20 +277,35 @@ numbers are **exploratory under v1.1** and must not be quoted as v1.1 results.
   fold's adjustments must differ from the full-set adjustments (proving the
   fold fit is restricted); a truncated refit must reproduce the fold fit
   exactly; undated comparables must not appear in the fitted set; every FARM
-  row must have positive EV at both the central and the P25 value. All checks
-  exit non-zero on failure.
+  row must pass the adopted gate under the conservative launch-probability
+  assumption; EV statistics must be internally consistent (ev_p10 ≤ ev_p25 ≤
+  ev_p50 ≤ ev_p75 ≤ ev_p90, 0 ≤ p_negative ≤ 1, p_negative ≥ 1 − p_L, and the
+  simulated p_negative must agree with the analytic value within 0.02).
+  All checks exit non-zero on failure.
 
 ## Per-fold reporting and slices
 
 - Every validation number is reported per fold and pooled, never pooled-only.
-- Slices: dated-only (headline); undated-only as a reference diagnostic.
+- Slices: dated-only (headline); undated-only as a reference diagnostic,
+  labeled "unsupported estimates".
+- **Nested reconciliation (v1.2):** the two nested pooled numbers are
+  reconciled in a table — `nested_selection_pooled` (folds 50–80, 28 test
+  rows) vs `nested_wf_pooled` (folds 50–90, 35 test rows, including the
+  untouched 90% fold). For each: the folds included, the exact test-row
+  count, the fold date ranges, the aggregation (pooled-by-observation median
+  of per-row absolute log errors — **not** an average of fold medians), and
+  whether the observation set, the features, the purge, and the estimator are
+  identical. The two numbers differ **only** because the observation sets
+  differ (the 90% fold's 7 rows); on identical observation sets the same
+  calculation reproduces exactly, and the reconciliation asserts that by
+  recomputation.
 - The nested 80% fold is diagnosed per fold, not dropped: a diagnostics table
   per fold (test window, n, median TVL, median age, category mix, unseen
   categories/chains, median signed error, median abs error, P90 error, and
-  the per-row errors). Under v1.0 it was 1.0201 dex with the purge gap: its
+  the per-row errors). Under v1.1 it was 1.0483 dex with the purge gap: its
   test window (2025-09 → 2026-02) holds the newest listings, including
-  structural extremes — rain (Prediction Market, mcap/TVL 400x, error 2.91
-  dex) and obol (Staking Pool, mcap/TVL 0.0006x, error 1.89 dex) — and 3 of
+  structural extremes — rain (Prediction Market, mcap/TVL 400x, error 2.56
+  dex) and obol (Staking Pool, mcap/TVL 0.0006x, error 1.81 dex) — and 3 of
   its 7 rows are in categories with zero training comps (Prediction Market,
   Staking Pool, Decentralized AI) plus one unseen chain (Bittensor). Both
   Huber and OLS fail identically there, so it is the data, not the estimator.
@@ -223,11 +316,26 @@ numbers are **exploratory under v1.1** and must not be quoted as v1.1 results.
 - Target = snapshot market cap; no price history; FDV-at-TGE unverifiable.
 - Survivorship bias: 15 zero-mcap + 14 Gecko-no-cap dead records are visible;
   fully delisted tokens are invisible; fitted values bias upward.
-- Undated comps (22/92) are a different, harder population; under v1.1 they
-  are excluded from the fit entirely and reported as a reference only.
-- The launch-odds curve beats the base rate only slightly out of sample; the
-  EV of every farm verdict depends on that curve, so the verdicts inherit its
-  calibration limits — the audit table shows the exposure.
+- Undated comps (22/92) are a different, harder population; under v1.2 they
+  are excluded from the fit entirely and reported as a reference only,
+  labeled "unsupported estimates".
+- **The launch-odds model is not predictive enough to beat a constant:**
+  ROC-AUC 0.5575, the Brier-improvement CI over the base rate straddles zero,
+  and the base rate beats even the Platt-calibrated curve on the untouched
+  chronological test. The board therefore uses the base rate (0.1643) as p_L
+  for every row. Every farm EV inherits this: the launch probability is a
+  constant, so the board ranks on fitted value, and the EV's upside comes
+  from the lognormal value tail, not from discriminating launch odds.
+- **The median farming outcome is a loss on this population:** every board
+  row's launch odds are below 0.5 (base rate 0.1643; the best Platt row is
+  0.4161), so the 25th — and usually the 50th — percentile of the net-return
+  distribution is the full plan cost lost. Positive mean EVs come from the
+  right tail of the value distribution. The gate test in v1.2 exists to say
+  plainly whether any row survives a risk-aware rule under that fact.
 - The 80% nested fold is the hard fold; its median is reported, not dropped.
 - The 0.25% farmer share, the exit at snapshot market cap, and the absence of
   slippage, liquidity, and lockup modeling are assumptions, not measurements.
+- Out-of-distribution rows (unseen chain/category, TVL or age outside the
+  training range, nearest comparable > 0.5 dex away) carry an extrapolation
+  warning and a ×1.5 band; their predictions are less trustworthy than
+  in-distribution ones.

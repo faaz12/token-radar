@@ -1,4 +1,4 @@
-// Leakage-injection self-test (radar-8, charter v1.1): verifies the pipeline catches
+// Leakage-injection self-test (radar-9, charter v1.2): verifies the pipeline catches
 // doctored snapshots and that no feature or adjustment peeks past a fold's cutoff.
 //
 // Run from the entry directory:
@@ -121,24 +121,43 @@ check(
   `cutoff ${cutoffDate}, ${liveComps(truncated).length} comps`,
 );
 
-// 11. Verdicts are EV-based with the charter v1.1 safety margin: every farm row has a
-//     positive expected net return at BOTH the central value and the P25 value, and no
-//     skip row has a positive expected net return.
-const { board } = buildRadar(snapshot);
+// 11. Verdicts are EV-based under the charter v1.2 decision engine: a farm row passes
+//     the ADOPTED gate under the CONSERVATIVE launch odds, and no marginal row does.
+//     The farm count may legitimately be ZERO — the gate is not a quota, and this
+//     check must never require >= 1 farm. No skip row has a positive mean EV.
+const { board, radar } = buildRadar(snapshot);
 const farmRows = board.filter((r) => r.verdict === 'farm');
+const marginalRows = board.filter((r) => r.verdict === 'marginal');
 const skipRows = board.filter((r) => r.verdict === 'skip');
 check(
-  'every farm row has positive expected net return at central AND P25 value',
-  farmRows.length > 0 && farmRows.every((r) => r.model.expected_value_usd > 0 && r.model.ev_conservative_usd > 0),
-  `${farmRows.length} farm rows`,
+  'every farm row passes the adopted gate under the conservative launch odds',
+  farmRows.every((r) => r.model.gate_pass_conservative && r.model.gate_pass_adopted && r.model.expected_value_usd > 0 && r.model.ev_p25_usd > 0),
+  `${farmRows.length} farm rows (0 is legitimate — the gate is not a quota)`,
+);
+check(
+  'no marginal row passes the adopted gate under the conservative launch odds',
+  marginalRows.every((r) => !r.model.gate_pass_conservative),
+  `${marginalRows.length} marginal rows`,
 );
 check(
   'no skip row has a positive expected net return',
   skipRows.every((r) => r.model.expected_value_usd <= 0),
   `${skipRows.length} skip rows`,
 );
+// The gate-test table matches the board: the adopted variant's farm count under the
+// adopted odds equals the rows whose adopted gate passes, and the board's farm count
+// equals the rows whose conservative gate passes. (The gate test is computed in
+// buildRadar, not fitModel — it needs the board.)
+const gateTest = radar.validation.gate_test;
+const adoptedVariant = gateTest.adopted === 'a' ? gateTest.variant_a : gateTest.variant_b;
+check(
+  'gate-test table matches the board farms',
+  adoptedVariant.farm_count === board.filter((r) => r.model.gate_pass_adopted).length &&
+    farmRows.length === board.filter((r) => r.model.gate_pass_conservative).length,
+  `variant (${gateTest.adopted}) farms ${adoptedVariant.farm_count} under adopted odds, board farms ${farmRows.length} under conservative odds`,
+);
 
-// 12. Undated comparables are hard-gated (charter v1.1): the fit uses exactly the 70
+// 12. Undated comparables are hard-gated (charter v1.2): the fit uses exactly the 70
 //     dated comps, liveComps contains no undated row, and the 22 undated rows exist
 //     only as a reference table.
 const live = liveComps(snapshot);
@@ -164,9 +183,81 @@ check(
 // 14. Model selection follows the locked rule: OLS is selected on this snapshot
 //     (ridge wins the metric by 0.0039 dex, under the 0.01 dex simplicity threshold).
 check(
-  'model selection picks OLS under the charter v1.1 rule',
+  'model selection picks OLS under the charter v1.2 rule',
   fitted.validation.model_selection.selected === 'ols',
   fitted.validation.model_selection.reason,
+);
+
+// 15. EV consistency (charter v1.2 — the radar-8 contradiction, caught here): every
+//     statistic comes from ONE simulation array per protocol, so for every board row
+//     the quantiles are monotone, P(negative) is in [0, 1] and at least the non-launch
+//     mass (1 - p_L), and the simulated P(negative) agrees with the analytic one
+//     within Monte Carlo error (0.02).
+const evBad = board.filter((r) => {
+  const m = r.model;
+  const monotone =
+    m.ev_p10_usd <= m.ev_p25_usd && m.ev_p25_usd <= m.ev_p50_usd && m.ev_p50_usd <= m.ev_p75_usd && m.ev_p75_usd <= m.ev_p90_usd;
+  const pNegOk = m.prob_negative_return >= 0 && m.prob_negative_return <= 1 && m.prob_negative_return >= 1 - m.launch_odds - 1e-9;
+  const simVsAnalytic = Math.abs(m.prob_negative_return - m.prob_negative_analytic) <= 0.02;
+  return !(monotone && pNegOk && simVsAnalytic);
+});
+check(
+  'EV statistics are consistent (monotone quantiles, P(neg) in range and >= 1-p_L, sim vs analytic within 0.02)',
+  evBad.length === 0,
+  evBad.length === 0 ? `${board.length} rows checked` : `inconsistent rows: ${evBad.map((r) => r.slug).join(', ')}`,
+);
+// With launch odds below 25%, the 25th percentile of the net-return mixture is the
+// non-launch point mass (-cost): the old radar-8 "P25 EV +$22,148" cannot recur.
+const lowOddsBad = board.filter((r) => r.model.launch_odds < 0.25 && Math.abs(r.model.ev_p25_usd + r.plan_cost_usd) > 1);
+check(
+  'P25 of the net return is -cost whenever launch odds are below 25%',
+  lowOddsBad.length === 0,
+  lowOddsBad.length === 0 ? `${board.filter((r) => r.model.launch_odds < 0.25).length} rows below 25% odds` : `violations: ${lowOddsBad.map((r) => r.slug).join(', ')}`,
+);
+
+// 16. Launch-odds decision (charter v1.2): the board uses the base rate for every row
+//     until a better model validates — the seasoning curve is diagnostic only.
+const lod = fitted.validation.launch_odds_decision;
+check(
+  'launch-odds decision is the base rate, applied to every board row',
+  lod.source === 'base-rate' && board.every((r) => Math.abs(r.model.launch_odds - lod.base_rate) < 1e-9),
+  `source ${lod.source}, base rate ${lod.base_rate}, conservative lower bound ${lod.conservative_lower_bound}`,
+);
+
+// 17. Nested reconciliation (charter v1.2): the two nested pooled numbers reproduce
+//     exactly from the sealed snapshot, and the difference is labeled as a different
+//     test set, not a different calculation.
+check(
+  'nested 0.3203 vs 0.3284 reconciles and reproduces',
+  fitted.validation.nested_reconciliation.reproduces === true &&
+    Math.abs(fitted.validation.nested_reconciliation.recomputed_selection_dex - 0.3203) < 1e-9 &&
+    Math.abs(fitted.validation.nested_reconciliation.recomputed_all_folds_dex - 0.3284) < 1e-9,
+  fitted.validation.nested_reconciliation.difference_explanation,
+);
+
+// 18. Out-of-distribution (charter v1.2): every row carries an OOD report; OOD rows
+//     get the wider band (x1.5) and the "extrapolation" confidence, never the
+//     in-distribution confidence.
+const oodBad = board.filter((r) => {
+  const o = r.model.ood;
+  if (o.is_ood) return o.band_multiplier !== 1.5 || o.confidence !== 'extrapolation';
+  return o.band_multiplier !== 1 || o.confidence === 'extrapolation';
+});
+check(
+  'out-of-distribution rows are flagged with a wider band and lower confidence',
+  oodBad.length === 0,
+  `${board.filter((r) => r.model.ood.is_ood).length} of ${board.length} rows out-of-distribution`,
+);
+
+// 19. TVL floor sensitivity (charter v1.2): the diagnostic covers all five floors and
+//     the locked $25M row's selection metric equals the selection metric.
+const floors = fitted.validation.floor_sensitivity.rows;
+check(
+  'floor sensitivity covers $0M/$10M/$25M/$50M/$100M with the locked $25M metric matching selection',
+  floors.length === 5 &&
+    floors.map((f) => f.floor_usd).join(',') === '0,10000000,25000000,50000000,100000000' &&
+    Math.abs(floors.find((f) => f.floor_usd === 25_000_000)!.selection_pooled_dex - fitted.validation.nested_selection_pooled) < 1e-9,
+  `${floors.length} floors, locked $25M selection pooled ${floors.find((f) => f.floor_usd === 25_000_000)?.selection_pooled_dex} dex`,
 );
 
 if (failures.length > 0) {

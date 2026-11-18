@@ -1,4 +1,4 @@
-// Token Radar's model (radar-8, evaluation charter v1.1): one sealed snapshot in, one ranked board out.
+// Token Radar's model (radar-9, evaluation charter v1.2): one sealed snapshot in, one ranked board out.
 //
 // The board covers every protocol the snapshot's watchlist names (the floor, never a ceiling)
 // and every other pre-token protocol the snapshot carries: the early rows the radar exists to
@@ -10,7 +10,7 @@
 // never mixed into the ranked board.
 //
 // Implied value is FITTED, not hand-set, in two parts:
-//  1. Value if it launches: a Huber-fitted log-log regression, fitted at run time on the
+//  1. Value if it launches: an OLS-fitted log-log regression, fitted at run time on the
 //     snapshot's own live-token comparables: protocols with a token trading, TVL and market
 //     cap positive, CEX excluded — and, since radar-6, only protocols the board could rank.
 //     The same wrapped / staked / bridged / versioned / exchange-product exclusions the
@@ -21,7 +21,7 @@
 //     special-cased: the exclusion is the board's own rule, applied uniformly by category
 //     and name pattern.
 //       log10(V) = b0 + b1*log10(tvl + $25M) + adjustments
-//       Growth is NOT a production feature (charter v1.1): the growth coefficient is
+//       Growth is NOT a production feature (charter v1.1, carried): the growth coefficient is
 //       unstable across folds (-0.07 on the full fit, +0.20…+1.00 in nested folds) and
 //       no growth variant improves held-out error, so change_7d is run only as a
 //       separate signed diagnostic and never enters the production fit. The snapshot
@@ -30,25 +30,28 @@
 //       a small protocol is never priced at zero for being small. The floor is a locked
 //       constant, not a tuned optimum: no floor dominates the grid ($0M/$10M/$25M/$50M/
 //       $100M), and choosing it inside training folds scores worse pooled.
-//       Huber (IRLS, delta 1.345, MAD scale): the snapshot's own attribution quirks — a chain
-//       token counted on its bridge, one token counted on two versions of a protocol — are
-//       down-weighted instead of dragging the fit. Huber, OLS and a mild ridge are co-equal
-//       candidates under charter v1.1: the production estimator is chosen by the
-//       prespecified selection rule (nested 50–80 pooled median, with a simplicity
-//       tie-break and a tail-error/sensitivity condition for Huber), never by R².
+//       Huber, OLS and a mild ridge are co-equal candidates under charter v1.2: the
+//       production estimator is chosen by the prespecified selection rule (nested 50–80
+//       pooled median, with a simplicity tie-break and a tail-error/sensitivity condition
+//       for Huber), never by R².
 //       group adjustments: the median residual of a category / a main chain, shrunk toward
 //       zero by n/(n+3), so a group with one or two comps moves the price a little and a
 //       group with fifteen moves it a lot. A joint category intercept was tested and
 //       rejected: it improves nested/CV within noise but makes the walk-forward
 //       significantly worse.
-//  2. Launch odds: a seasoning curve, a logistic fit of "has a token" on log10(age+1) over
-//     all 645 dated protocols in the snapshot (not just the training comps). Older
-//     protocols are more likely to have launched; an unlisted age takes the base rate.
+//  2. Launch odds: the BASE RATE (charter v1.2). The seasoning curve (a logistic fit of
+//     "has a token" on log10(age+1) over all 645 dated protocols) is still fitted and
+//     audited, but it does not set any board launch odds: on the untouched chronological
+//     test the base rate beats even the Platt-calibrated curve (Brier 0.1131 vs 0.1144),
+//     and the bootstrap 95% CI for the curve's Brier improvement over the base rate
+//     straddles zero — the curve is not predictive enough to beat a constant. So every
+//     board row takes p_L = the base rate (0.1643) until a better model validates.
 //       implied_value_usd = value_if_launches x launch_odds
-//     Age left the regression: it now prices launch likelihood, not size.
+//     Age left the regression: it now prices launch likelihood, not size — and under
+//     v1.2 the board's launch likelihood is the constant base rate, not the curve.
 //
 // The fit is validated at run time and the dashboard shows all of it, under evaluation
-// charter v1.1 (EVALUATION_CHARTER.md): the nested expanding-window walk-forward on dated
+// charter v1.2 (EVALUATION_CHARTER.md): the nested expanding-window walk-forward on dated
 // comparables only is the headline (train on the oldest 50/60/70/80/90%, test on the next
 // 10% forward in time, with a 30-day purge gap — train rows listed within 30 days before a
 // test window are dropped), with folds 50–80 as the prespecified selection metric and the
@@ -61,12 +64,17 @@
 // reported alongside. The seasoning curve is validated with fold-local refits (Brier,
 // log-loss, ECE against the base-rate baseline) plus a reliability diagram, bootstrap
 // intervals for the improvement over the base rate, ROC/PR AUC, and a Platt-calibration
-// test on a chronological calibration set. Every farm plan carries a verdict from
-// its expected net return with a safety margin: EV = launch odds × 0.25% × value-if-launches − plan cost;
-// farm when EV is positive at both the central value and the P25 value, marginal when it is
-// positive centrally but not at P25 (or negative with break-even odds ≤33%), skip otherwise.
-// Undated comparables are hard-gated out of every fit and calibration and appear only as a
-// reference table. No protocol name is ever special-cased: the same function scores every row.
+// test on a chronological calibration set — and the base rate is compared against the
+// curve on the exact same chronological test observations, calibration and discrimination
+// reported separately. Every farm plan carries a verdict from its expected net return:
+// EV = launch odds × 0.25% × value-if-launches − plan cost, computed from ONE seeded
+// simulation array per protocol (the full mixture: launch Bernoulli × lognormal value),
+// so the mean, the P10/P25/P50/P75/P90 quantiles and P(negative return) are all
+// statistics of the same distribution; the farm gate is tested in two variants and
+// chosen by a prespecified rule, and a farm must also survive under a conservative
+// launch-probability assumption. Undated comparables are hard-gated out of every fit
+// and calibration and appear only as a reference table labeled "unsupported estimates".
+// No protocol name is ever special-cased: the same function scores every row.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -125,10 +133,10 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-8';
+export const MODEL_VERSION = 'radar-9';
 
 /** The evaluation charter version this model's validation follows. */
-export const CHARTER_VERSION = 'v1.1';
+export const CHARTER_VERSION = 'v1.2';
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -283,6 +291,10 @@ export interface Validation {
   target: TargetDoc;
   missingness: MissingnessReport;
   truncation_audit: TruncationAudit;
+  launch_odds_decision: LaunchOddsDecision;
+  gate_test: GateTest | null;
+  nested_reconciliation: NestedReconciliation;
+  floor_sensitivity: FloorSensitivity;
 }
 
 /** One of the three co-equal regression estimators (charter v1.1). */
@@ -325,7 +337,7 @@ export interface ReliabilityBin {
   mean_pred: number;
 }
 
-/** The launch-probability audit (charter v1.1): reliability, bootstrap intervals,
+/** The launch-probability audit (charter v1.2): reliability, bootstrap intervals,
  * ranking metrics, and the Platt-calibration test. */
 export interface SeasoningAudit {
   reliability_bins: ReliabilityBin[];
@@ -338,6 +350,9 @@ export interface SeasoningAudit {
     adopted: boolean;
     a: number | null;
     b: number | null;
+    /** The fitted Platt parameters even when not adopted (for the EV stress test). */
+    fitted_a: number | null;
+    fitted_b: number | null;
     cal_brier: number;
     cal_log_loss: number;
     test_brier_raw: number;
@@ -346,27 +361,210 @@ export interface SeasoningAudit {
     test_log_loss_platt: number;
     test_brier_base: number;
     test_log_loss_base: number;
+    /** Calibration (ECE) and discrimination (ROC-AUC) on the same untouched test
+     * rows, reported separately for each of the three predictors. */
+    test_ece_raw: number;
+    test_ece_platt: number;
+    test_ece_base: number;
+    test_roc_raw: number;
+    test_roc_platt: number;
+    test_roc_base: number;
     n_calibration: number;
     n_test: number;
     reason: string;
   };
 }
 
+/** One row's EV simulation (charter v1.2): every statistic is computed from ONE
+ * seeded simulation array — the full mixture (launch Bernoulli × lognormal value)
+ * — so the mean, the quantiles and P(negative) cannot contradict each other.
+ * The conditional-on-launch value scenarios are point evaluations at the P25/P75/P10
+ * value, labeled as conditional; they are NOT quantiles of the net return. */
+export interface EvSimulation {
+  /** Draws in the simulation array (20,000), seeded by the slug. */
+  n_draws: number;
+  /** The seed (FNV-1a hash of the slug): the same slug always draws the same array. */
+  seed: number;
+  /** The expected net return: the MEAN of the simulation array (the "central EV"). */
+  ev_mean_usd: number;
+  /** Quantiles of the net-return array (same array as the mean). */
+  ev_p10_usd: number;
+  ev_p25_usd: number;
+  ev_p50_usd: number;
+  ev_p75_usd: number;
+  ev_p90_usd: number;
+  /** P(negative return) = mean(ev < 0) over the same array. */
+  prob_negative: number;
+  /** The analytic P(negative) = 1 − p_L × P(value > cost / 0.25%): must agree with
+   * the simulated value within Monte Carlo error (±0.02 at N = 20,000). */
+  prob_negative_analytic: number;
+  /** EV at the P25 / P75 / P10 value IF it launches: point evaluations, conditional
+   * on launch — NOT quantiles of the net return. */
+  ev_at_p25_value_if_launches_usd: number;
+  ev_at_p75_value_if_launches_usd: number;
+  ev_at_p10_value_if_launches_usd: number;
+  /** The P10 value itself (conditional on launch), kept for the audit table. */
+  p10_value_usd: number;
+  /** Stress test: the mean EV under the three launch-probability assumptions, all
+   * from the SAME (u, V) draw pairs (only the launch threshold changes). */
+  ev_mean_base_rate_usd: number;
+  ev_mean_platt_usd: number;
+  ev_mean_conservative_usd: number;
+  /** The 25th / 50th / 75th percentile of the net return under the conservative
+   * launch-probability assumption (the gate is tested on these for a FARM). */
+  ev_p25_conservative_usd: number;
+  ev_p50_conservative_usd: number;
+  ev_p75_conservative_usd: number;
+}
+
+/** One gate variant's test result (charter v1.2): the variant, what it farms,
+ * and the worst downside among its farms. */
+export interface GateTestVariant {
+  variant: 'a' | 'b';
+  rule: string;
+  farm_count: number;
+  farm_slugs: string[];
+  /** The maximum P(negative return) among the rows this variant farms (null when it farms none). */
+  max_prob_negative: number | null;
+  /** Whether the variant satisfies the prespecified choice conditions: (i) farms at
+   * least one row, and (ii) rejects at least one row with ev_mean > 0 through its
+   * additional condition. */
+  fires: boolean;
+  filters: boolean;
+  /** Rows with ev_mean > 0, and how many of them this variant rejects. */
+  positive_ev_count: number;
+  rejected_positive_count: number;
+}
+
+/** The gate test (charter v1.2): both variants tested honestly on the corrected
+ * statistics, under the adopted (base-rate) launch odds, and the adopted variant
+ * chosen by the prespecified rule — never by the FARM count. */
+export interface GateTest {
+  variant_a: GateTestVariant;
+  variant_b: GateTestVariant;
+  adopted: 'a' | 'b';
+  reason: string;
+}
+
+/** The nested reconciliation (charter v1.2): why the two nested pooled numbers
+ * differ. They are pooled-by-observation medians over DIFFERENT observation sets;
+ * on identical sets the same calculation reproduces exactly. */
+export interface NestedReconciliation {
+  selection: {
+    folds: string;
+    n_test_rows: number;
+    fold_date_range: string;
+    pooled_median_dex: number;
+    mean_of_fold_medians_dex: number;
+  };
+  all_folds: {
+    folds: string;
+    n_test_rows: number;
+    fold_date_range: string;
+    pooled_median_dex: number;
+    mean_of_fold_medians_dex: number;
+  };
+  aggregation: string;
+  same_observations: boolean;
+  same_features_purge_estimator: boolean;
+  difference_explanation: string;
+  recomputed_selection_dex: number;
+  recomputed_all_folds_dex: number;
+  reproduces: boolean;
+}
+
+/** The launch-odds decision (charter v1.2): the board uses the base rate unless
+ * the seasoning curve passes the prespecified adoption test against it. */
+export interface LaunchOddsDecision {
+  source: 'base-rate' | 'seasoning-curve';
+  base_rate: number;
+  /** The conservative lower bound: the 2.5th percentile of a 2000-resample bootstrap
+   * of the base rate over the 645 dated protocols (fixed seed 20261107). */
+  conservative_lower_bound: number;
+  curve_beats_base_brier: boolean;
+  curve_beats_base_log_loss: boolean;
+  brier_improvement_ci_excludes_zero: boolean;
+  platt_beats_base_brier: boolean;
+  platt_beats_base_log_loss: boolean;
+  reason: string;
+}
+
+/** One floor's row in the TVL-floor sensitivity diagnostic (charter v1.2): the
+ * full-fit coefficients and the selection-pooled metric, on identical folds. */
+export interface FloorSensitivityRow {
+  floor_usd: number;
+  intercept: number;
+  coef_log_tvl: number;
+  selection_pooled_dex: number;
+  spearman_vs_25m: number | null;
+  top20_overlap_vs_25m: number | null;
+  top10_changes_vs_25m: number | null;
+}
+
+/** The TVL-floor sensitivity diagnostic (charter v1.2): the floor stays locked at
+ * $25M; this reports what changing it would do, it does not change it. */
+export interface FloorSensitivity {
+  rows: FloorSensitivityRow[];
+  /** Choosing the floor by 5-fold CV inside each training fold only, then scoring
+   * the chosen floor on the fold's test set, pooled over the selection folds. */
+  training_fold_choice_pooled_dex: number;
+  training_fold_choice_floors: number[];
+  locked_floor_pooled_dex: number;
+  note: string;
+}
+
+/** A board row's out-of-distribution report (charter v1.2): checked against the
+ * training domain (the 70 dated comps). */
+export interface OodReport {
+  unseen_chain: boolean;
+  unseen_category: boolean;
+  tvl_out_of_range: boolean;
+  age_out_of_range: boolean;
+  nearest_comp_distance_dex: number;
+  is_ood: boolean;
+  band_multiplier: number;
+  confidence: 'in-distribution' | 'extrapolation';
+}
+
+/** The training domain the OOD check measures against: the 70 dated comps. */
+export interface OodDomain {
+  categories: string[];
+  chains: string[];
+  log_tvl_min: number;
+  log_tvl_max: number;
+  age_min_days: number;
+  age_max_days: number;
+}
+
 /** One row of the EV end-to-end audit: the scenarios and the downside for a farm
- * (or demoted ex-farm) protocol. */
+ * (or demoted ex-farm) protocol. ev_central_usd is the MEAN net return from the
+ * simulation array; ev_conservative_usd / ev_optimistic_usd are its P25 / P75. */
 export interface EvAuditRow {
   slug: string;
   name: string;
   value_if_launches_usd: number;
   launch_odds: number;
+  launch_odds_platt: number;
   break_even_odds: number;
   plan_cost_usd: number;
   ev_central_usd: number;
   ev_conservative_usd: number;
   ev_optimistic_usd: number;
   prob_negative_return: number;
+  prob_negative_analytic: number;
   p10_value_usd: number;
   ev_at_p10_usd: number;
+  /** EV at the P25 / P75 value IF it launches — conditional, not net-return quantiles. */
+  ev_at_p25_value_if_launches_usd: number;
+  ev_at_p75_value_if_launches_usd: number;
+  /** Stress test: the mean EV under the three launch-probability assumptions. */
+  ev_mean_base_rate_usd: number;
+  ev_mean_platt_usd: number;
+  ev_mean_conservative_usd: number;
+  /** Whether the adopted gate passes under the conservative assumption. */
+  gate_pass_conservative: boolean;
+  /** Out-of-distribution: this row's prediction is an extrapolation. */
+  is_ood: boolean;
   verdict: Verdict;
   verdict_rule: string;
 }
@@ -484,13 +682,29 @@ export interface BoardRow {
     predicted_log_value: number;
     value_if_launches_usd: number;
     launch_odds: number;
+    launch_odds_platt: number;
     break_even_odds: number;
+    /** expected_value_usd is the MEAN net return from the simulation array. */
     expected_value_usd: number;
+    /** ev_conservative_usd / ev_optimistic_usd are the P25 / P75 of that same array. */
     ev_conservative_usd: number;
     ev_optimistic_usd: number;
+    ev_p10_usd: number;
+    ev_p25_usd: number;
+    ev_p50_usd: number;
+    ev_p75_usd: number;
+    ev_p90_usd: number;
     prob_negative_return: number;
+    prob_negative_analytic: number;
     p10_value_usd: number;
     ev_at_p10_usd: number;
+    ev_at_p25_value_if_launches_usd: number;
+    ev_at_p75_value_if_launches_usd: number;
+    ev_mean_base_rate_usd: number;
+    ev_mean_platt_usd: number;
+    ev_mean_conservative_usd: number;
+    gate_pass_conservative: boolean;
+    gate_pass_adopted: boolean;
     band_p25_usd: number;
     band_p75_usd: number;
     category_adjustment: number;
@@ -500,6 +714,7 @@ export interface BoardRow {
     growth_pct: number;
     age_days: number | null;
     basis: 'fitted';
+    ood: OodReport;
   };
   farm_steps: string[];
 }
@@ -524,17 +739,32 @@ export interface RadarRow {
   predicted_log_value: number;
   value_if_launches_usd: number;
   launch_odds: number;
+  launch_odds_platt: number;
   break_even_odds: number;
   expected_value_usd: number;
   ev_conservative_usd: number;
   ev_optimistic_usd: number;
+  ev_p10_usd: number;
+  ev_p25_usd: number;
+  ev_p50_usd: number;
+  ev_p75_usd: number;
+  ev_p90_usd: number;
   prob_negative_return: number;
+  prob_negative_analytic: number;
   p10_value_usd: number;
   ev_at_p10_usd: number;
+  ev_at_p25_value_if_launches_usd: number;
+  ev_at_p75_value_if_launches_usd: number;
+  ev_mean_base_rate_usd: number;
+  ev_mean_platt_usd: number;
+  ev_mean_conservative_usd: number;
+  gate_pass_conservative: boolean;
+  gate_pass_adopted: boolean;
   band_p25_usd: number;
   band_p75_usd: number;
   category_adjustment: number;
   chain_adjustment: number;
+  ood: OodReport;
 }
 
 /** A live-token protocol: it already trades, so the board shows the market's own value, not a model's. */
@@ -962,7 +1192,7 @@ export function seasoningMetrics(rows: SnapshotProtocol[], asOf: string, seasoni
 }
 
 /** A protocol's launch odds from the seasoning curve; an unlisted age takes the base rate.
- * When a Platt recalibration was adopted (charter v1.1), the raw logistic odds are passed
+ * When a Platt recalibration was adopted (charter v1.2), the raw logistic odds are passed
  * through it: p_cal = sigmoid(a + b·logit(p)). Fold-local seasonings never carry Platt
  * parameters, so validation metrics are always of the raw curve. */
 export function launchOdds(age: number | null, seasoning: Seasoning): number {
@@ -1005,44 +1235,200 @@ export interface FittedModel {
   comparables: Comparable[];
   chainComparables: Comparable[];
   scatter: ScatterPoint[];
+  /** The training domain the OOD check measures board rows against. */
+  oodDomain: OodDomain;
+  /** The training comps' log10(TVL + floor), for the nearest-comparable distance. */
+  oodCompLogTvls: number[];
+  /** The launch-odds decision (charter v1.2): base rate unless the curve passes. */
+  launchOddsDecision: LaunchOddsDecision;
+  /** The fitted Platt parameters (even when not adopted) for the EV stress test. */
+  plattFitted: { a: number; b: number } | null;
 }
 
-/** The assumptions every farm EV rests on (charter v1.1): stated, not measured. */
+/** The assumptions every farm EV rests on (charter v1.2): stated, not measured.
+ * The EV statistics come from one seeded simulation array per protocol (20,000
+ * draws: launch Bernoulli × lognormal value), so the mean, the quantiles and
+ * P(negative return) are statistics of the same distribution; the conditional
+ * value scenarios are labeled as conditional on launch. */
 export const EV_ASSUMPTIONS =
-  'Farmer share 0.25% of the launch value (assumed, not verified from data); exit value = snapshot market cap (no slippage, no liquidity, no lockup modeled — the snapshot carries no unlock schedule, no order-book depth, and no fee data, so none is invented); farming costs = gas per chain + opportunity cost of the $10,000 deposit at 10% annual over the hold window; hold days by age (60 < 180d, 45 < 365d, else 30); a non-launch loses the full plan cost.';
+  'Farmer share 0.25% of the launch value (assumed, not verified from data); exit value = snapshot market cap (no slippage, no liquidity, no lockup modeled — the snapshot carries no unlock schedule, no order-book depth, and no fee data, so none is invented); farming costs = gas per chain + opportunity cost of the $10,000 deposit at 10% annual over the hold window; hold days by age (60 < 180d, 45 < 365d, else 30); a non-launch loses the full plan cost. EV statistics are one seeded simulation (20,000 draws, launch Bernoulli × lognormal value, σ from the 50% band / 0.6745, ×1.5 for out-of-distribution rows); the mean is the expected net return and the P25/P50/P75 are quantiles of that same net-return array. FARM requires the adopted gate to pass under the conservative launch-probability assumption (the 2.5th percentile bootstrap lower bound of the base rate).';
 
-/** The EV scenarios for one protocol: central, conservative (P25 value), optimistic (P75
- * value), the probability of a negative return, and the P10 value with its EV.
- * log10(value) is treated as normal with σ = (50% band half-width) / 0.6745 around the
- * prediction; a non-launch returns −cost. */
-export function evScenarios(
-  launchOddsValue: number,
+/** Draws in one protocol's EV simulation array (charter v1.2). */
+export const EV_SIM_DRAWS = 20_000;
+
+/** FNV-1a hash of a string, as a 32-bit seed: the same slug always draws the same
+ * simulation array, whatever order the board is built in. */
+export function fnv1aHash(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+/** A quantile of a sorted array (ceil(q·n) − 1), the same convention as p90Of. */
+function quantileOf(sorted: number[], q: number): number {
+  if (sorted.length === 0) return 0;
+  return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(q * sorted.length) - 1))]!;
+}
+
+/**
+ * One protocol's EV draw pairs (charter v1.2): for each draw, a launch uniform u
+ * and a value draw V. The value is lognormal: log10(V) = predictedLog + σ·z with
+ * z ~ Normal(0,1) by Box–Muller on the seeded PRNG, σ from the (possibly
+ * OOD-widened) band half-width. The same pairs are evaluated under every
+ * launch-probability assumption, so the stress test compares the same outcomes.
+ * Exported so buildRadar can export the raw Polymarket simulation output.
+ */
+export function simulateEvPairs(
   predictedLog: number,
   planCost: number,
-  bandHalfwidth: number,
+  sigma: number,
+  nDraws: number,
+  seed: number,
   model: ModelConstants = MODEL,
-): { evCentral: number; evConservative: number; evOptimistic: number; probNegative: number; p10Value: number; evAtP10: number } {
-  const sigma = bandHalfwidth > 0 ? bandHalfwidth / 0.6745 : 0.01;
-  const valueAt = (logV: number): number => Math.min(model.value_max, Math.max(model.value_min, Math.round(10 ** logV)));
-  const evAt = (value: number): number => launchOddsValue * model.farmer_share * value - planCost;
-  const central = valueAt(predictedLog);
-  const conservative = valueAt(predictedLog - bandHalfwidth);
-  const optimistic = valueAt(predictedLog + bandHalfwidth);
-  const p10Value = valueAt(predictedLog - 1.2816 * sigma);
-  const threshold = planCost / model.farmer_share;
-  const pValueAboveThreshold = 1 - normalCdf((Math.log10(Math.max(1, threshold)) - predictedLog) / sigma);
-  const probNegative = 1 - launchOddsValue * pValueAboveThreshold;
+): { u: number[]; values: number[] } {
+  const rand = mulberry32(seed);
+  const u: number[] = new Array(nDraws);
+  const values: number[] = new Array(nDraws);
+  let spare: number | null = null;
+  const nextNormal = (): number => {
+    if (spare !== null) {
+      const z = spare;
+      spare = null;
+      return z;
+    }
+    let a = 0;
+    let b = 0;
+    do {
+      a = rand();
+      b = rand();
+    } while (a <= 0);
+    const r = Math.sqrt(-2 * Math.log(a));
+    const t = 2 * Math.PI * b;
+    spare = r * Math.sin(t);
+    return r * Math.cos(t);
+  };
+  for (let i = 0; i < nDraws; i++) {
+    u[i] = rand();
+    const logV = predictedLog + sigma * nextNormal();
+    values[i] = Math.min(model.value_max, Math.max(model.value_min, Math.round(10 ** logV)));
+  }
+  return { u, values };
+}
+
+/** The EV statistics of one draw-pair set under one launch probability: the mean,
+ * the quantiles and P(negative) of the net-return array. Every statistic comes
+ * from the same array. */
+export function evStatsFromPairs(
+  pairs: { u: number[]; values: number[] },
+  launchOddsValue: number,
+  planCost: number,
+  model: ModelConstants = MODEL,
+): { mean: number; p10: number; p25: number; p50: number; p75: number; p90: number; probNegative: number } {
+  const n = pairs.u.length;
+  const evs: number[] = new Array(n);
+  let sum = 0;
+  let neg = 0;
+  for (let i = 0; i < n; i++) {
+    const ev = pairs.u[i]! < launchOddsValue ? model.farmer_share * pairs.values[i]! - planCost : -planCost;
+    evs[i] = ev;
+    sum += ev;
+    if (ev < 0) neg += 1;
+  }
+  evs.sort((a, b) => a - b);
   return {
-    evCentral: evAt(central),
-    evConservative: evAt(conservative),
-    evOptimistic: evAt(optimistic),
-    probNegative,
-    p10Value,
-    evAtP10: evAt(p10Value),
+    mean: sum / n,
+    p10: quantileOf(evs, 0.1),
+    p25: quantileOf(evs, 0.25),
+    p50: quantileOf(evs, 0.5),
+    p75: quantileOf(evs, 0.75),
+    p90: quantileOf(evs, 0.9),
+    probNegative: neg / n,
   };
 }
 
-/** The launch-probability audit (charter v1.1): reliability diagram, bootstrap
+/** The analytic P(negative return) = 1 − p_L × P(value > cost / farmer_share),
+ * with log10(value) normal around the prediction. The v1.1 formula — kept as the
+ * cross-check the simulation must agree with within Monte Carlo error. */
+export function analyticProbNegative(
+  launchOddsValue: number,
+  predictedLog: number,
+  planCost: number,
+  sigma: number,
+  model: ModelConstants = MODEL,
+): number {
+  const threshold = planCost / model.farmer_share;
+  const pValueAboveThreshold = 1 - normalCdf((Math.log10(Math.max(1, threshold)) - predictedLog) / sigma);
+  return 1 - launchOddsValue * pValueAboveThreshold;
+}
+
+/** The Platt-calibrated launch odds for one raw curve probability. */
+export function plattOdds(rawP: number, a: number, b: number): number {
+  const logit = Math.log(Math.max(1e-9, rawP) / Math.max(1e-9, 1 - rawP));
+  const z = Math.max(-30, Math.min(30, a + b * logit));
+  return 1 / (1 + Math.exp(-z));
+}
+
+/**
+ * The EV simulation for one protocol (charter v1.2): one seeded array of
+ * 20,000 draws, every statistic from that array. `launchOddsAdopted` is the
+ * adopted p_L (the base rate unless the curve passed the adoption test);
+ * `launchOddsBaseRate`, `launchOddsPlatt` (the Platt-calibrated curve's p_L for
+ * this row) and `conservativeLowerBound` (the bootstrap lower bound) are the
+ * three stress-test assumptions, all computed from the SAME draw pairs. The
+ * conditional value scenarios (EV at the P25/P75/P10 value IF it launches) are
+ * point evaluations, labeled as conditional, never as quantiles of the net return.
+ */
+export function evSimulation(
+  slug: string,
+  launchOddsAdopted: number,
+  launchOddsBaseRate: number,
+  launchOddsPlatt: number,
+  conservativeLowerBound: number,
+  predictedLog: number,
+  planCost: number,
+  bandHalfwidth: number,
+  bandMultiplier: number,
+  model: ModelConstants = MODEL,
+): EvSimulation {
+  const sigma = bandHalfwidth > 0 ? (bandHalfwidth * bandMultiplier) / 0.6745 : 0.01;
+  const seed = fnv1aHash(slug);
+  const pairs = simulateEvPairs(predictedLog, planCost, sigma, EV_SIM_DRAWS, seed, model);
+  const adopted = evStatsFromPairs(pairs, launchOddsAdopted, planCost, model);
+  const baseRate = evStatsFromPairs(pairs, launchOddsBaseRate, planCost, model);
+  const platt = evStatsFromPairs(pairs, launchOddsPlatt, planCost, model);
+  const conservative = evStatsFromPairs(pairs, conservativeLowerBound, planCost, model);
+  const valueAt = (logV: number): number => Math.min(model.value_max, Math.max(model.value_min, Math.round(10 ** logV)));
+  const evAtValueIfLaunches = (value: number): number => launchOddsAdopted * model.farmer_share * value - planCost;
+  const p10Value = valueAt(predictedLog - 1.2816 * sigma);
+  const effectiveHalfwidth = bandHalfwidth * bandMultiplier;
+  return {
+    n_draws: EV_SIM_DRAWS,
+    seed,
+    ev_mean_usd: Math.round(adopted.mean),
+    ev_p10_usd: Math.round(adopted.p10),
+    ev_p25_usd: Math.round(adopted.p25),
+    ev_p50_usd: Math.round(adopted.p50),
+    ev_p75_usd: Math.round(adopted.p75),
+    ev_p90_usd: Math.round(adopted.p90),
+    prob_negative: round4(adopted.probNegative),
+    prob_negative_analytic: round4(analyticProbNegative(launchOddsAdopted, predictedLog, planCost, sigma, model)),
+    ev_at_p25_value_if_launches_usd: Math.round(evAtValueIfLaunches(valueAt(predictedLog - effectiveHalfwidth))),
+    ev_at_p75_value_if_launches_usd: Math.round(evAtValueIfLaunches(valueAt(predictedLog + effectiveHalfwidth))),
+    ev_at_p10_value_if_launches_usd: Math.round(evAtValueIfLaunches(p10Value)),
+    p10_value_usd: p10Value,
+    ev_mean_base_rate_usd: Math.round(baseRate.mean),
+    ev_mean_platt_usd: Math.round(platt.mean),
+    ev_mean_conservative_usd: Math.round(conservative.mean),
+    ev_p25_conservative_usd: Math.round(conservative.p25),
+    ev_p50_conservative_usd: Math.round(conservative.p50),
+    ev_p75_conservative_usd: Math.round(conservative.p75),
+  };
+}
+
+/** The launch-probability audit (charter v1.2): reliability diagram, bootstrap
  * intervals for the improvement over the base rate, ROC/PR AUC, and a Platt
  * recalibration fitted on the earliest fold-local predictions and tested on the
  * latest ones. Pure arithmetic on the pooled fold-local predictions — no fitting
@@ -1176,7 +1562,35 @@ export function auditLaunchOdds(pool: { pred: number; y: number; fold: number }[
   const testLogLossRaw = logLossOf(testRaw);
   const testBrierPlatt = brierOf(testPlatt);
   const testLogLossPlatt = logLossOf(testPlatt);
-  const adopted = plattA !== null && plattB !== null && testBrierPlatt < testBrierRaw && testLogLossPlatt < testLogLossRaw;
+  const testBrierBase = brierOf(testBase);
+  const testLogLossBase = logLossOf(testBase);
+  // Calibration (ECE, 10 fixed bins) and discrimination (ROC-AUC, Mann–Whitney)
+  // for each of the three predictors on the SAME untouched test rows.
+  const eceOf = (rows: { pred: number; y: number }[]): number => {
+    if (rows.length === 0) return 0;
+    const bins: { count: number; predSum: number; actualSum: number }[] = Array.from({ length: 10 }, () => ({ count: 0, predSum: 0, actualSum: 0 }));
+    for (const r of rows) {
+      const b = Math.min(9, Math.floor(r.pred * 10));
+      bins[b]!.count += 1;
+      bins[b]!.predSum += r.pred;
+      bins[b]!.actualSum += r.y;
+    }
+    let ece = 0;
+    for (const b of bins) if (b.count > 0) ece += (b.count / rows.length) * Math.abs(b.actualSum / b.count - b.predSum / b.count);
+    return ece;
+  };
+  const rocAucOf = (rows: { pred: number; y: number }[]): number => {
+    const pos = rows.filter((r) => r.y === 1);
+    const neg = rows.filter((r) => r.y === 0);
+    if (pos.length === 0 || neg.length === 0) return 0.5;
+    let auc = 0;
+    for (const p of pos) for (const q of neg) auc += p.pred > q.pred ? 1 : p.pred === q.pred ? 0.5 : 0;
+    return auc / (pos.length * neg.length);
+  };
+  // Charter v1.2: Platt is adopted only if it beats the BASE RATE (not merely the
+  // raw curve) on BOTH Brier and log-loss on the untouched test. Under v1.1
+  // evidence the base rate beats even the Platt curve, so Platt is not adopted.
+  const adopted = plattA !== null && plattB !== null && testBrierPlatt < testBrierBase && testLogLossPlatt < testLogLossBase;
   return {
     reliability_bins: reliabilityBins,
     brier_improvement_ci: ci(dBrier),
@@ -1188,21 +1602,29 @@ export function auditLaunchOdds(pool: { pred: number; y: number; fold: number }[
       adopted,
       a: adopted ? plattA : null,
       b: adopted ? plattB : null,
+      fitted_a: plattA,
+      fitted_b: plattB,
       cal_brier: round4(calBrier),
       cal_log_loss: round4(calLogLoss),
       test_brier_raw: round4(testBrierRaw),
       test_log_loss_raw: round4(testLogLossRaw),
       test_brier_platt: round4(testBrierPlatt),
       test_log_loss_platt: round4(testLogLossPlatt),
-      test_brier_base: round4(brierOf(testBase)),
-      test_log_loss_base: round4(logLossOf(testBase)),
+      test_brier_base: round4(testBrierBase),
+      test_log_loss_base: round4(testLogLossBase),
+      test_ece_raw: round4(eceOf(testRaw)),
+      test_ece_platt: round4(eceOf(testPlatt)),
+      test_ece_base: round4(eceOf(testBase)),
+      test_roc_raw: round4(rocAucOf(testRaw)),
+      test_roc_platt: round4(rocAucOf(testPlatt)),
+      test_roc_base: round4(rocAucOf(testBase)),
       n_calibration: calRows.length,
       n_test: testRows.length,
       reason: adopted
-        ? `Platt adopted: on the untouched 80/90 test set it beats the raw curve on both Brier (${testBrierPlatt.toFixed(4)} vs ${testBrierRaw.toFixed(4)}) and log-loss (${testLogLossPlatt.toFixed(4)} vs ${testLogLossRaw.toFixed(4)}).`
+        ? `Platt adopted: on the untouched 80/90 test set it beats the base rate on both Brier (${testBrierPlatt.toFixed(4)} vs ${testBrierBase.toFixed(4)}) and log-loss (${testLogLossPlatt.toFixed(4)} vs ${testLogLossBase.toFixed(4)}).`
         : plattA === null
           ? 'Platt not fitted: calibration set too small.'
-          : `Platt NOT adopted: on the untouched 80/90 test set it does not beat the raw curve on both Brier (${testBrierPlatt.toFixed(4)} vs ${testBrierRaw.toFixed(4)}) and log-loss (${testLogLossPlatt.toFixed(4)} vs ${testLogLossRaw.toFixed(4)}). The raw curve stands — no added complexity without evidence.`,
+          : `Platt NOT adopted (charter v1.2): on the untouched 80/90 test set it does not beat the base rate on both Brier (${testBrierPlatt.toFixed(4)} vs ${testBrierBase.toFixed(4)}) and log-loss (${testLogLossPlatt.toFixed(4)} vs ${testLogLossBase.toFixed(4)}). The base rate stands — no added complexity without evidence.`,
     },
   };
 }
@@ -1580,6 +2002,115 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
     });
   }
 
+  // The training domain for the out-of-distribution check (charter v1.2): the
+  // 70 dated comps — their categories, main chains, log-TVL range and age range.
+  const oodDomain: OodDomain = {
+    categories: [...new Set(comps.map((p) => p.category ?? 'Other'))].sort(),
+    chains: [...new Set(comps.map(mainChain))].sort(),
+    log_tvl_min: Math.min(...comps.map((p) => Math.log10(Math.max(1, p.tvl_usd) + model.size_floor_usd))),
+    log_tvl_max: Math.max(...comps.map((p) => Math.log10(Math.max(1, p.tvl_usd) + model.size_floor_usd))),
+    age_min_days: Math.min(...comps.map((p) => ageDays(asOf, p.listed_at) ?? 0)),
+    age_max_days: Math.max(...comps.map((p) => ageDays(asOf, p.listed_at) ?? 0)),
+  };
+
+  // The nested reconciliation (charter v1.2): the two nested pooled numbers are
+  // pooled-by-observation medians over DIFFERENT observation sets. Selection
+  // (folds 50–80, 28 rows) excludes the untouched 90% fold; all-folds (50–90,
+  // 35 rows) includes it. The mean-of-fold-medians is shown alongside to prove
+  // the aggregation is pooled-by-observation, not an average of fold medians.
+  const selectionFoldErrs = nestedFoldErrsByEst[selected].slice(0, 4);
+  const allFoldErrs = nestedFoldErrsByEst[selected];
+  const meanOfFoldMedians = (folds: number[][]): number =>
+    folds.length === 0 ? 0 : folds.map((f) => pooledMedian(f)).reduce((a, b) => a + b, 0) / folds.length;
+  const recomputedSelection = pooledMedian(nestedErrsSelection[selected]);
+  const recomputedAll = pooledMedian(nestedErrs[selected]);
+  const nestedReconciliation: NestedReconciliation = {
+    selection: {
+      folds: '50/60/70/80',
+      n_test_rows: nestedErrsSelection[selected].length,
+      fold_date_range: `${nestedDiagnostics[0]!.test_start} → ${nestedDiagnostics[3]!.test_end}`,
+      pooled_median_dex: selectionPooled[selected],
+      mean_of_fold_medians_dex: round4(meanOfFoldMedians(selectionFoldErrs)),
+    },
+    all_folds: {
+      folds: '50/60/70/80/90',
+      n_test_rows: nestedErrs[selected].length,
+      fold_date_range: `${nestedDiagnostics[0]!.test_start} → ${nestedDiagnostics[4]!.test_end}`,
+      pooled_median_dex: nestedPooledByEst[selected],
+      mean_of_fold_medians_dex: round4(meanOfFoldMedians(allFoldErrs)),
+    },
+    aggregation: 'Pooled-by-observation median of per-row absolute log errors (all test rows pooled, then the median) — NOT an average of fold medians.',
+    same_observations: false,
+    same_features_purge_estimator: true,
+    difference_explanation: `The two numbers differ only because the observation sets differ: nested_wf_pooled (${nestedPooledByEst[selected]} dex) includes the untouched 90% fold (7 newest comps, median ${round4(pooledMedian(nestedFoldErrsByEst[selected][4] ?? []))} dex), nested_selection_pooled (${selectionPooled[selected]} dex) excludes it. The features, the 30-day purge and the estimator are identical for both.`,
+    recomputed_selection_dex: round4(recomputedSelection),
+    recomputed_all_folds_dex: round4(recomputedAll),
+    reproduces: round4(recomputedSelection) === selectionPooled[selected] && round4(recomputedAll) === nestedPooledByEst[selected],
+  };
+
+  // The TVL-floor sensitivity diagnostic (charter v1.2): for each floor, the
+  // full-fit coefficients and the selection-pooled metric on identical folds.
+  // The ranking fields are filled in buildRadar (they need the board); the
+  // floor stays locked at $25M — this diagnostic reports, it does not change it.
+  const FLOORS = [0, 10_000_000, 25_000_000, 50_000_000, 100_000_000];
+  const floorRows: FloorSensitivityRow[] = FLOORS.map((floor) => {
+    const m = { ...model, size_floor_usd: floor };
+    const fullF = fitRegression(comps, asOf, m, selected);
+    const errs: number[] = [];
+    for (const d of nestedFoldData.filter((x) => x.pct < 90)) {
+      const f = fitRegression(d.foldTrain, asOf, m, selected);
+      errs.push(...absErrs(d.foldTest, f.beta, f.adj, f.chainAdj));
+    }
+    return {
+      floor_usd: floor,
+      intercept: round4(fullF.beta[0]!),
+      coef_log_tvl: round4(fullF.beta[1]!),
+      selection_pooled_dex: round4(pooledMedian(errs)),
+      spearman_vs_25m: null,
+      top20_overlap_vs_25m: null,
+      top10_changes_vs_25m: null,
+    };
+  });
+  // Training-fold-only floor choice: for each selection fold, choose the floor by
+  // 5-fold CV inside that fold's training set only, then score the chosen floor on
+  // the fold's test set and pool. This is what choosing the floor inside training
+  // folds would actually buy — the choice never sees a test row.
+  const chosenFloors: number[] = [];
+  const chosenErrs: number[] = [];
+  for (const d of nestedFoldData.filter((x) => x.pct < 90)) {
+    const shuffledTrain = seededShuffle(d.foldTrain, 20261118);
+    const cvFolds: SnapshotProtocol[][] = [[], [], [], [], []];
+    shuffledTrain.forEach((p, i) => cvFolds[i % 5]!.push(p));
+    let bestFloor = FLOORS[0]!;
+    let bestCv = Infinity;
+    for (const floor of FLOORS) {
+      const m = { ...model, size_floor_usd: floor };
+      const cvErrs: number[] = [];
+      for (let f = 0; f < 5; f++) {
+        const testFold = cvFolds[f]!;
+        const trainFolds = cvFolds.flatMap((fold, i) => (i === f ? [] : fold));
+        const cvFit = fitRegression(trainFolds, asOf, m, selected);
+        cvErrs.push(...absErrs(testFold, cvFit.beta, cvFit.adj, cvFit.chainAdj));
+      }
+      const cvMed = pooledMedian(cvErrs);
+      if (cvMed < bestCv) {
+        bestCv = cvMed;
+        bestFloor = floor;
+      }
+    }
+    chosenFloors.push(bestFloor);
+    const mChosen = { ...model, size_floor_usd: bestFloor };
+    const chosenFit = fitRegression(d.foldTrain, asOf, mChosen, selected);
+    chosenErrs.push(...absErrs(d.foldTest, chosenFit.beta, chosenFit.adj, chosenFit.chainAdj));
+  }
+  const floorSensitivity: FloorSensitivity = {
+    rows: floorRows,
+    training_fold_choice_pooled_dex: round4(pooledMedian(chosenErrs)),
+    training_fold_choice_floors: chosenFloors,
+    locked_floor_pooled_dex: selectionPooled[selected],
+    note: 'The floor stays locked at $25M in radar-9: it is a stability constant, not a tuned optimum. This diagnostic reports the grid and the training-fold-only choice; it does not select a floor.',
+  };
+
   // The production fit uses the selected estimator, on dated comps only.
   const full = fitEst(selected)(comps);
   const r2 = rSquared(comps, asOf, full.beta, full.adj, full.chainAdj, model);
@@ -1664,6 +2195,48 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
     seasoning.platt_a = seasoningAudit.platt.a;
     seasoning.platt_b = seasoningAudit.platt.b;
   }
+
+  // The launch-odds decision (charter v1.2, prespecified): the board uses the base
+  // rate unless the seasoning curve beats the base rate on BOTH Brier and log-loss
+  // on the untouched chronological test (the fold-local predictions from cutoffs
+  // 80/90, n = 100) AND the bootstrap 95% CI for the Brier improvement over the
+  // base rate excludes zero. Under v1.1 evidence the curve fails both: the base
+  // rate beats even the Platt curve on the untouched test, and the CI straddles
+  // zero — so the board's p_L is the base rate for every row.
+  const datedProtocols = snapshot.protocols.filter((p) => ageDays(asOf, p.listed_at) !== null);
+  const baseRateOutcomes = datedProtocols.map((p) => (p.mcap_usd !== null ? 1 : 0));
+  const baseRand = mulberry32(20261107);
+  const baseRateResamples: number[] = [];
+  for (let b = 0; b < 2000; b++) {
+    let sum = 0;
+    for (let i = 0; i < baseRateOutcomes.length; i++) sum += baseRateOutcomes[Math.floor(baseRand() * baseRateOutcomes.length)]!;
+    baseRateResamples.push(sum / baseRateOutcomes.length);
+  }
+  baseRateResamples.sort((a, b) => a - b);
+  const conservativeLowerBound = baseRateResamples[Math.floor(0.025 * baseRateResamples.length)] ?? seasoning.base_rate;
+  const curveBeatsBaseBrier = seasoningAudit.platt.test_brier_raw < seasoningAudit.platt.test_brier_base;
+  const curveBeatsBaseLogLoss = seasoningAudit.platt.test_log_loss_raw < seasoningAudit.platt.test_log_loss_base;
+  const brierCiExcludesZero = seasoningAudit.brier_improvement_ci[0]! > 0;
+  const plattBeatsBaseBrier = seasoningAudit.platt.test_brier_platt < seasoningAudit.platt.test_brier_base;
+  const plattBeatsBaseLogLoss = seasoningAudit.platt.test_log_loss_platt < seasoningAudit.platt.test_log_loss_base;
+  const adoptCurve = curveBeatsBaseBrier && curveBeatsBaseLogLoss && brierCiExcludesZero;
+  const launchOddsDecision: LaunchOddsDecision = {
+    source: adoptCurve ? 'seasoning-curve' : 'base-rate',
+    base_rate: seasoning.base_rate,
+    conservative_lower_bound: round4(conservativeLowerBound),
+    curve_beats_base_brier: curveBeatsBaseBrier,
+    curve_beats_base_log_loss: curveBeatsBaseLogLoss,
+    brier_improvement_ci_excludes_zero: brierCiExcludesZero,
+    platt_beats_base_brier: plattBeatsBaseBrier,
+    platt_beats_base_log_loss: plattBeatsBaseLogLoss,
+    reason: adoptCurve
+      ? `Seasoning curve adopted: it beats the base rate on both Brier (${seasoningAudit.platt.test_brier_raw} vs ${seasoningAudit.platt.test_brier_base}) and log-loss (${seasoningAudit.platt.test_log_loss_raw} vs ${seasoningAudit.platt.test_log_loss_base}) on the untouched 80/90 test set, and the bootstrap 95% CI for the Brier improvement excludes zero (${seasoningAudit.brier_improvement_ci[0]} to ${seasoningAudit.brier_improvement_ci[1]}).`
+      : `Base rate adopted: the seasoning curve does not beat the base rate on both Brier (${seasoningAudit.platt.test_brier_raw} vs ${seasoningAudit.platt.test_brier_base}) and log-loss (${seasoningAudit.platt.test_log_loss_raw} vs ${seasoningAudit.platt.test_log_loss_base}) on the untouched 80/90 test set, and the bootstrap 95% CI for the Brier improvement straddles zero (${seasoningAudit.brier_improvement_ci[0]} to ${seasoningAudit.brier_improvement_ci[1]}). The curve is not predictive enough to beat a constant, so every board row takes p_L = the base rate (${seasoning.base_rate}) until a better model validates.`,
+  };
+  const plattFitted: { a: number; b: number } | null =
+    seasoningAudit.platt.fitted_a !== null && seasoningAudit.platt.fitted_b !== null
+      ? { a: seasoningAudit.platt.fitted_a, b: seasoningAudit.platt.fitted_b }
+      : null;
   const fullFitMetrics = seasoningMetrics(
     snapshot.protocols.filter((p) => p.listed_at !== null),
     asOf,
@@ -1794,9 +2367,9 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
     undated_err: round4(undatedMedianAbs),
     combined_err: round4(oosStratified),
     mechanism:
-      `Structural (MNAR): undated comparables are legacy protocols whose listing dates were never recorded. They are systematically smaller (median market cap $4.8M vs $9.0M dated) and over-predicted (median residual ${undatedMedianSigned.toFixed(3)} dex under the dated-only v1.1 fit), so the missingness itself carries signal about size.`,
+      `Structural (MNAR): undated comparables are legacy protocols whose listing dates were never recorded. They are systematically smaller (median market cap $4.8M vs $9.0M dated) and over-predicted (median residual ${undatedMedianSigned.toFixed(3)} dex under the dated-only v1.2 fit), so the missingness itself carries signal about size.`,
     handling:
-      'Hard-gate (d, charter v1.1): undated comparables are excluded from every regression fit, group adjustment, cross-validation fold, conformal calibration, baseline, and bootstrap resample. They are scored only as a reference table with the dated-only full fit; their error is a diagnostic, never a headline and never mixed into any fitted quantity.',
+      'Hard-gate (d, charter v1.2): undated comparables are excluded from every regression fit, group adjustment, cross-validation fold, conformal calibration, baseline, and bootstrap resample. They are scored only as a reference table with the dated-only full fit; their error is a diagnostic, never a headline and never mixed into any fitted quantity.',
   };
 
   // The truncation-invariance audit, run at build time: for every time-based fold,
@@ -1881,7 +2454,7 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
     unit: 'log10 USD',
     fdv_available: false,
     fdv_note: 'The snapshot carries no FDV field and no price history, so FDV-at-TGE and FDV-median-days-3–7 cannot be built or verified from this data. Market cap and FDV are never merged into one target.',
-    comparability_note: 'Error-rate comparisons against other entries are valid only when target, dates, and error definition match. The radar-7 comparison of 2.77x vs the leader’s reported 3.21x is not claimed under v1.1.',
+    comparability_note: 'Error-rate comparisons against other entries are valid only when target, dates, and error definition match. The radar-7 comparison of 2.77x vs the leader’s reported 3.21x is not claimed under v1.2.',
   };
   const validation: Validation = {
     r2: round4(r2),
@@ -1920,6 +2493,10 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
     target,
     missingness,
     truncation_audit: { passed: truncationPassed, checks: truncationChecks },
+    launch_odds_decision: launchOddsDecision,
+    gate_test: null,
+    nested_reconciliation: nestedReconciliation,
+    floor_sensitivity: floorSensitivity,
   };
   const toComparable = (m: Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }>): Comparable[] =>
     [...m.entries()]
@@ -1931,36 +2508,114 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
     x: round3(Math.log10(p.tvl_usd)),
     y: round3(Math.log10(p.mcap_usd!)),
   }));
-  return { beta: full.beta, adjustments: full.adj, chainAdjustments: full.chainAdj, fit, validation, seasoning, bandHalfwidth, comparables, chainComparables, scatter };
+  return { beta: full.beta, adjustments: full.adj, chainAdjustments: full.chainAdj, fit, validation, seasoning, bandHalfwidth, comparables, chainComparables, scatter, oodDomain, oodCompLogTvls: comps.map((p) => Math.log10(Math.max(1, p.tvl_usd) + model.size_floor_usd)), launchOddsDecision, plattFitted };
 }
 
-/** The fitted value of one protocol: value if it launches, launch odds, and the odds-weighted implied value, with the P25/P75 band and the EV scenarios (charter v1.1). */
+/** A board row's out-of-distribution report (charter v1.2): its main chain and
+ * category against the training sets, its log-TVL and age against the training
+ * ranges, and its distance to the nearest comparable in log-TVL. A row is
+ * out-of-distribution when any check fails or its nearest comparable is more
+ * than 0.5 dex away in size. */
+export function oodReport(
+  p: SnapshotProtocol,
+  asOf: string,
+  domain: OodDomain,
+  compLogTvls: number[],
+  model: ModelConstants = MODEL,
+): OodReport {
+  const logTvl = Math.log10(Math.max(1, p.tvl_usd) + model.size_floor_usd);
+  const age = ageDays(asOf, p.listed_at);
+  const unseenChain = !domain.chains.includes(mainChain(p));
+  const unseenCategory = !domain.categories.includes(p.category ?? 'Other');
+  const tvlOut = logTvl < domain.log_tvl_min || logTvl > domain.log_tvl_max;
+  const ageOut = age === null || age < domain.age_min_days || age > domain.age_max_days;
+  const nearest = compLogTvls.length > 0 ? Math.min(...compLogTvls.map((x) => Math.abs(x - logTvl))) : Infinity;
+  const isOod = unseenChain || unseenCategory || tvlOut || ageOut || nearest > 0.5;
+  return {
+    unseen_chain: unseenChain,
+    unseen_category: unseenCategory,
+    tvl_out_of_range: tvlOut,
+    age_out_of_range: ageOut,
+    nearest_comp_distance_dex: round4(nearest),
+    is_ood: isOod,
+    band_multiplier: isOod ? 1.5 : 1,
+    confidence: isOod ? 'extrapolation' : 'in-distribution',
+  };
+}
+
+/** Whether a row passes one gate variant on its (simulated) EV statistics.
+ * Variant (a): the current rule — mean EV > 0 AND P25 of net return > 0.
+ * Variant (b): the Gemini proposal — mean EV > 0 AND the P50-to-P25 downside
+ * is at most half the P50-to-P75 upside. All statistics from the same array. */
+export function gatePasses(variant: 'a' | 'b', evMean: number, evP25: number, evP50: number, evP75: number): boolean {
+  if (variant === 'a') return evMean > 0 && evP25 > 0;
+  return evMean > 0 && evP50 - evP25 <= 0.5 * (evP75 - evP50);
+}
+
+/** The fitted value of one protocol: value if it launches, launch odds, and the odds-weighted implied value, with the P25/P75 band and the EV simulation (charter v1.2). */
 export function impliedValue(
   protocol: SnapshotProtocol,
   asOf: string,
   fitted: FittedModel,
   model: ModelConstants = MODEL,
-): { implied: number; valueIfLaunches: number; predictedLog: number; launchOdds: number; breakEvenOdds: number; bandP25: number; bandP75: number; growthPct: number; age: number | null; adjustment: number; chainAdjustment: number; count: number; basis: 'category' | 'global'; evConservative: number; evOptimistic: number; probNegative: number; p10Value: number; evAtP10: number } {
+): {
+  implied: number;
+  valueIfLaunches: number;
+  predictedLog: number;
+  launchOdds: number;
+  launchOddsPlatt: number;
+  breakEvenOdds: number;
+  bandP25: number;
+  bandP75: number;
+  growthPct: number;
+  age: number | null;
+  adjustment: number;
+  chainAdjustment: number;
+  count: number;
+  basis: 'category' | 'global';
+  sim: EvSimulation;
+  ood: OodReport;
+} {
   const age = ageDays(asOf, protocol.listed_at);
   const predictedLog = predictLog(protocol, asOf, fitted.beta, fitted.adjustments, fitted.chainAdjustments, model);
   const valueIfLaunches = Math.min(model.value_max, Math.max(model.value_min, Math.round(10 ** predictedLog)));
-  const odds = launchOdds(age, fitted.seasoning);
-  const implied = Math.min(model.value_max, Math.max(model.value_min, Math.round(valueIfLaunches * odds)));
+  // The adopted launch odds (charter v1.2): the base rate unless the seasoning
+  // curve passed the adoption test. The raw curve and the Platt-calibrated curve
+  // are computed alongside for the EV stress test only.
+  const oddsAdopted =
+    fitted.launchOddsDecision.source === 'base-rate' ? fitted.seasoning.base_rate : launchOdds(age, fitted.seasoning);
+  const oddsRaw = launchOdds(age, { ...fitted.seasoning, platt_a: null, platt_b: null });
+  const oddsPlatt = fitted.plattFitted ? plattOdds(oddsRaw, fitted.plattFitted.a, fitted.plattFitted.b) : oddsRaw;
+  const implied = Math.min(model.value_max, Math.max(model.value_min, Math.round(valueIfLaunches * oddsAdopted)));
   const cost = planCostUsd(protocol, model, asOf);
   const beOdds = breakEvenOdds(valueIfLaunches, cost, model);
-  const bandP25 = Math.min(model.value_max, Math.max(model.value_min, Math.round(10 ** (predictedLog - fitted.bandHalfwidth) * odds)));
-  const bandP75 = Math.min(model.value_max, Math.max(model.value_min, Math.round(10 ** (predictedLog + fitted.bandHalfwidth) * odds)));
+  const ood = oodReport(protocol, asOf, fitted.oodDomain, fitted.oodCompLogTvls, model);
+  const effectiveHalfwidth = fitted.bandHalfwidth * ood.band_multiplier;
+  const bandP25 = Math.min(model.value_max, Math.max(model.value_min, Math.round(10 ** (predictedLog - effectiveHalfwidth) * oddsAdopted)));
+  const bandP75 = Math.min(model.value_max, Math.max(model.value_min, Math.round(10 ** (predictedLog + effectiveHalfwidth) * oddsAdopted)));
   const adj = fitted.adjustments.get(protocol.category ?? 'Other');
   const chainAdj = fitted.chainAdjustments.get(mainChain(protocol));
-  const scenarios = evScenarios(odds, predictedLog, cost, fitted.bandHalfwidth, model);
+  const sim = evSimulation(
+    protocol.slug,
+    oddsAdopted,
+    fitted.seasoning.base_rate,
+    oddsPlatt,
+    fitted.launchOddsDecision.conservative_lower_bound,
+    predictedLog,
+    cost,
+    fitted.bandHalfwidth,
+    ood.band_multiplier,
+    model,
+  );
   // growthPct is the protocol's raw 7-day change, display only: growth is not a
-  // production feature (charter v1.1).
+  // production feature (charter v1.2).
   const growthPct = finite(protocol.change_7d, 0) / 100;
   return {
     implied,
     valueIfLaunches,
     predictedLog,
-    launchOdds: odds,
+    launchOdds: oddsAdopted,
+    launchOddsPlatt: oddsPlatt,
     breakEvenOdds: beOdds,
     bandP25,
     bandP75,
@@ -1970,11 +2625,8 @@ export function impliedValue(
     chainAdjustment: chainAdj?.adjustment ?? 0,
     count: adj?.count ?? 0,
     basis: adj?.basis ?? 'global',
-    evConservative: scenarios.evConservative,
-    evOptimistic: scenarios.evOptimistic,
-    probNegative: scenarios.probNegative,
-    p10Value: scenarios.p10Value,
-    evAtP10: scenarios.evAtP10,
+    sim,
+    ood,
   };
 }
 
@@ -2112,28 +2764,30 @@ export function expectedValue(launchOdds: number, valueIfLaunches: number, cost:
 }
 
 /**
- * The farm verdict, from the expected net return with a safety margin (charter v1.1):
- * farm only when the expected return is positive at BOTH the central value and the
- * P25 value; marginal when it is positive centrally but not at P25 (no safety margin),
- * or negative but the break-even odds are low enough that a slightly better launch
- * chance would flip it; skip otherwise. The odds are the plan's and the protocol's
- * together: a protocol's own launch odds (p_L) decide the expected return, the
- * break-even odds (p_BE) decide how far away a positive return is.
+ * The farm verdict, from the simulated expected net return and the tested gate
+ * (charter v1.2): farm only when the adopted gate passes under the CONSERVATIVE
+ * launch-probability assumption (the stress test) — a row that passes under the
+ * adopted odds but not under the conservative odds is demoted to marginal.
+ * Marginal when the mean EV is positive under the adopted odds but the row is
+ * not a farm, or when the mean EV is negative but the break-even odds are low
+ * enough that a slightly better launch chance would flip it; skip otherwise.
+ * The odds are the plan's and the protocol's together: a protocol's own launch
+ * odds (p_L) decide the expected return, the break-even odds (p_BE) decide how
+ * far away a positive return is.
  */
-export function verdictFor(
-  launchOdds: number,
-  valueIfLaunches: number,
-  cost: number,
-  model: ModelConstants = MODEL,
-  bandHalfwidth = 0,
-  predictedLog = 0,
-): Verdict {
-  const ev = expectedValue(launchOdds, valueIfLaunches, cost, model);
-  const evP25 = evScenarios(launchOdds, predictedLog, cost, bandHalfwidth, model).evConservative;
-  if (ev > 0 && evP25 > 0) return 'farm';
-  if (ev > 0) return 'marginal';
-  const be = breakEvenOdds(valueIfLaunches, cost, model);
-  if (be <= model.marginal_break_even) return 'marginal';
+export function verdictFor(sim: EvSimulation, breakEvenOddsValue: number, gateVariant: 'a' | 'b', model: ModelConstants = MODEL): Verdict {
+  if (
+    gatePasses(
+      gateVariant,
+      sim.ev_mean_conservative_usd,
+      sim.ev_p25_conservative_usd,
+      sim.ev_p50_conservative_usd,
+      sim.ev_p75_conservative_usd,
+    )
+  )
+    return 'farm';
+  if (sim.ev_mean_usd > 0) return 'marginal';
+  if (breakEvenOddsValue <= model.marginal_break_even) return 'marginal';
   return 'skip';
 }
 
@@ -2182,12 +2836,18 @@ export function fmtOdds(odds: number): string {
 }
 
 /** The verdict's one line, first in every farm plan: the call and the arithmetic behind it. */
-export function verdictStep(verdict: Verdict, valueIfLaunches: number, launchOdds: number, beOdds: number, cost: number, evConservative: number | null = null): string {
-  const ev = expectedValue(launchOdds, valueIfLaunches, cost);
+export function verdictStep(verdict: Verdict, valueIfLaunches: number, launchOdds: number, beOdds: number, cost: number, sim: EvSimulation | null = null): string {
+  const ev = sim !== null ? sim.ev_mean_usd : expectedValue(launchOdds, valueIfLaunches, cost);
   const evText = ev >= 0 ? `+$${Math.round(ev).toLocaleString()}` : `−$${Math.round(-ev).toLocaleString()}`;
-  const evP25Text = evConservative === null ? '' : evConservative >= 0 ? ` and stays +$${Math.round(evConservative).toLocaleString()} at the P25 value` : ` but falls to −$${Math.round(-evConservative).toLocaleString()} at the P25 value`;
+  const evP25 = sim !== null ? sim.ev_p25_usd : null;
+  const evP25Text =
+    evP25 === null
+      ? ''
+      : evP25 >= 0
+        ? ` and the 25th-percentile net return is +$${Math.round(evP25).toLocaleString()}`
+        : ` but the 25th-percentile net return is −$${Math.round(-evP25).toLocaleString()}`;
   if (verdict === 'farm') {
-    return `Verdict: FARM — expected net return ${evText}${evP25Text}: a ${fmtOdds(launchOdds)} launch chance (p_L) beats the ${fmtOdds(beOdds)} break-even (p_BE), against a value if it launches of ${fmtShort(valueIfLaunches)} and a plan cost of about $${cost}. Farm this protocol first.`;
+    return `Verdict: FARM — expected net return ${evText}${evP25Text}: a ${fmtOdds(launchOdds)} launch chance (p_L) beats the ${fmtOdds(beOdds)} break-even (p_BE), against a value if it launches of ${fmtShort(valueIfLaunches)} and a plan cost of about $${cost}. The gate holds even under the conservative launch odds. Farm this protocol first.`;
   }
   if (verdict === 'marginal') {
     return `Verdict: MARGINAL — expected net return ${evText}${evP25Text}: needs ${fmtOdds(beOdds)} to break even against a ${fmtOdds(launchOdds)} launch chance, against a value if it launches of ${fmtShort(valueIfLaunches)} and a plan cost of about $${cost}. Worth a small position, not a priority.`;
@@ -2208,7 +2868,7 @@ export function farmSteps(p: SnapshotProtocol, v: ReturnType<typeof impliedValue
   const action = actionFor(p, capital, chain);
   return [
     {
-      text: verdictStep(verdict, v.valueIfLaunches, v.launchOdds, v.breakEvenOdds, cost, v.evConservative),
+      text: verdictStep(verdict, v.valueIfLaunches, v.launchOdds, v.breakEvenOdds, cost, v.sim),
       cost: `about $${cost} all-in`,
       time: '1 minute to read',
     },
@@ -2255,8 +2915,65 @@ export function farmSteps(p: SnapshotProtocol, v: ReturnType<typeof impliedValue
   ];
 }
 
+/** The gate test (charter v1.2, prespecified before results): both gate variants
+ * tested honestly on the corrected simulation statistics, under the adopted
+ * (base-rate) launch odds. The choice rule: adopt the variant that (i) farms at
+ * least one row AND (ii) rejects at least one row with ev_mean > 0 through its
+ * additional condition. If exactly one satisfies both, adopt it; if both do,
+ * adopt the one with the lower maximum P(negative) among its FARM rows; if
+ * neither does, adopt variant (a) — the pre-existing charter rule — and report
+ * the resulting FARM count, even if zero. The FARM count is never a target. */
+export function runGateTest(rows: { slug: string; sim: EvSimulation }[]): GateTest {
+  const testVariant = (variant: 'a' | 'b'): GateTestVariant => {
+    const farms = rows.filter((r) => gatePasses(variant, r.sim.ev_mean_usd, r.sim.ev_p25_usd, r.sim.ev_p50_usd, r.sim.ev_p75_usd));
+    const positiveEv = rows.filter((r) => r.sim.ev_mean_usd > 0);
+    const farmSlugs = new Set(farms.map((r) => r.slug));
+    const rejectedPositive = positiveEv.filter((r) => !farmSlugs.has(r.slug));
+    return {
+      variant,
+      rule:
+        variant === 'a'
+          ? 'FARM iff mean EV > 0 AND P25 of net return > 0 (the current rule, on the corrected simulation statistics).'
+          : 'FARM iff mean EV > 0 AND the P50-to-P25 downside is at most half the P50-to-P75 upside (the Gemini proposal).',
+      farm_count: farms.length,
+      farm_slugs: farms.map((r) => r.slug),
+      max_prob_negative: farms.length > 0 ? round4(Math.max(...farms.map((r) => r.sim.prob_negative))) : null,
+      fires: farms.length >= 1,
+      filters: rejectedPositive.length >= 1,
+      positive_ev_count: positiveEv.length,
+      rejected_positive_count: rejectedPositive.length,
+    };
+  };
+  const a = testVariant('a');
+  const b = testVariant('b');
+  const aWorks = a.fires && a.filters;
+  const bWorks = b.fires && b.filters;
+  let adopted: 'a' | 'b';
+  let reason: string;
+  if (aWorks && !bWorks) {
+    adopted = 'a';
+    reason = `Variant (a) adopted: it is the only variant that both fires (${a.farm_count} farm) and filters (it rejects ${a.rejected_positive_count} of ${a.positive_ev_count} positive-mean-EV rows through its additional condition); variant (b) ${b.fires ? `farms ${b.farm_count} rows but its additional condition rejects nothing` : 'farms nothing'}.`;
+  } else if (bWorks && !aWorks) {
+    adopted = 'b';
+    reason = `Variant (b) adopted: it is the only variant that both fires (${b.farm_count} farms) and filters (it rejects ${b.rejected_positive_count} of ${b.positive_ev_count} positive-mean-EV rows through its additional condition); variant (a) ${a.fires ? `farms ${a.farm_count} rows but its additional condition rejects nothing` : 'farms nothing'}.`;
+  } else if (aWorks && bWorks) {
+    const aMax = a.max_prob_negative ?? 1;
+    const bMax = b.max_prob_negative ?? 1;
+    adopted = aMax <= bMax ? 'a' : 'b';
+    reason = `Both variants fire and filter; variant (${adopted}) adopted for the lower maximum P(negative return) among its FARM rows (${(adopted === 'a' ? aMax : bMax)} vs ${(adopted === 'a' ? bMax : aMax)}).`;
+  } else {
+    adopted = 'a';
+    reason = `Neither variant both fires and filters — variant (a) farms ${a.farm_count} rows (${a.fires ? 'fires' : 'does not fire'}; ${a.filters ? `filters ${a.rejected_positive_count} of ${a.positive_ev_count} positive-mean-EV rows` : 'does not filter'}), variant (b) farms ${b.farm_count} rows (${b.fires ? 'fires' : 'does not fire'}; ${b.filters ? `filters ${b.rejected_positive_count} of ${b.positive_ev_count} positive-mean-EV rows` : 'does not filter'}) — so the pre-existing charter rule (a) is kept and the resulting FARM count (${a.farm_count}) is reported as-is. The FARM count is never a target.`;
+  }
+  return { variant_a: a, variant_b: b, adopted, reason };
+}
+
 /** The protocols the board ranks, strongest first, with ranks 1..n and strictly decreasing values. */
-export function buildBoard(snapshot: Snapshot, fitted: FittedModel, model: ModelConstants = MODEL): BoardRow[] {
+export function buildBoard(
+  snapshot: Snapshot,
+  fitted: FittedModel,
+  model: ModelConstants = MODEL,
+): { rows: BoardRow[]; gateTest: GateTest } {
   const index = bySlug(snapshot.protocols);
   const chosen = new Map<string, SnapshotProtocol>();
   // The watchlist is the floor: every slug, even one the snapshot no longer carries (it cannot,
@@ -2274,16 +2991,30 @@ export function buildBoard(snapshot: Snapshot, fitted: FittedModel, model: Model
   const scored = [...chosen.values()].map((p) => {
     const v = impliedValue(p, snapshot.as_of, fitted, model);
     const cost = planCostUsd(p, model, snapshot.as_of);
-    const verdict = verdictFor(v.launchOdds, v.valueIfLaunches, cost, model, fitted.bandHalfwidth, v.predictedLog);
-    return { p, v, cost, verdict };
+    return { p, v, cost };
   });
-  scored.sort((a, b) => b.v.implied - a.v.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
+  // The gate test runs on the scored rows' simulation statistics, under the adopted
+  // launch odds — before any verdict is assigned.
+  const gateTest = runGateTest(scored.map((s) => ({ slug: s.p.slug, sim: s.v.sim })));
+  const withVerdicts = scored.map((s) => ({
+    ...s,
+    verdict: verdictFor(s.v.sim, s.v.breakEvenOdds, gateTest.adopted, model),
+    gatePassAdopted: gatePasses(gateTest.adopted, s.v.sim.ev_mean_usd, s.v.sim.ev_p25_usd, s.v.sim.ev_p50_usd, s.v.sim.ev_p75_usd),
+    gatePassConservative: gatePasses(
+      gateTest.adopted,
+      s.v.sim.ev_mean_conservative_usd,
+      s.v.sim.ev_p25_conservative_usd,
+      s.v.sim.ev_p50_conservative_usd,
+      s.v.sim.ev_p75_conservative_usd,
+    ),
+  }));
+  withVerdicts.sort((a, b) => b.v.implied - a.v.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
   // Strictly decreasing implied values: rounding to whole dollars could tie two neighbours,
   // so a tied row steps down one dollar. The values are millions apart in practice; this is a guard.
-  for (let i = 1; i < scored.length; i++) {
-    if (scored[i]!.v.implied >= scored[i - 1]!.v.implied) scored[i]!.v.implied = scored[i - 1]!.v.implied - 1;
+  for (let i = 1; i < withVerdicts.length; i++) {
+    if (withVerdicts[i]!.v.implied >= withVerdicts[i - 1]!.v.implied) withVerdicts[i]!.v.implied = withVerdicts[i - 1]!.v.implied - 1;
   }
-  return scored.map((s, i) => ({
+  const rows: BoardRow[] = withVerdicts.map((s, i) => ({
     rank: i + 1,
     slug: s.p.slug,
     name: s.p.name,
@@ -2305,13 +3036,27 @@ export function buildBoard(snapshot: Snapshot, fitted: FittedModel, model: Model
       predicted_log_value: s.v.predictedLog,
       value_if_launches_usd: s.v.valueIfLaunches,
       launch_odds: round4(s.v.launchOdds),
+      launch_odds_platt: round4(s.v.launchOddsPlatt),
       break_even_odds: round4(s.v.breakEvenOdds),
-      expected_value_usd: Math.round(expectedValue(s.v.launchOdds, s.v.valueIfLaunches, s.cost)),
-      ev_conservative_usd: Math.round(s.v.evConservative),
-      ev_optimistic_usd: Math.round(s.v.evOptimistic),
-      prob_negative_return: round4(s.v.probNegative),
-      p10_value_usd: s.v.p10Value,
-      ev_at_p10_usd: Math.round(s.v.evAtP10),
+      expected_value_usd: s.v.sim.ev_mean_usd,
+      ev_conservative_usd: s.v.sim.ev_p25_usd,
+      ev_optimistic_usd: s.v.sim.ev_p75_usd,
+      ev_p10_usd: s.v.sim.ev_p10_usd,
+      ev_p25_usd: s.v.sim.ev_p25_usd,
+      ev_p50_usd: s.v.sim.ev_p50_usd,
+      ev_p75_usd: s.v.sim.ev_p75_usd,
+      ev_p90_usd: s.v.sim.ev_p90_usd,
+      prob_negative_return: s.v.sim.prob_negative,
+      prob_negative_analytic: s.v.sim.prob_negative_analytic,
+      p10_value_usd: s.v.sim.p10_value_usd,
+      ev_at_p10_usd: s.v.sim.ev_at_p10_value_if_launches_usd,
+      ev_at_p25_value_if_launches_usd: s.v.sim.ev_at_p25_value_if_launches_usd,
+      ev_at_p75_value_if_launches_usd: s.v.sim.ev_at_p75_value_if_launches_usd,
+      ev_mean_base_rate_usd: s.v.sim.ev_mean_base_rate_usd,
+      ev_mean_platt_usd: s.v.sim.ev_mean_platt_usd,
+      ev_mean_conservative_usd: s.v.sim.ev_mean_conservative_usd,
+      gate_pass_conservative: s.gatePassConservative,
+      gate_pass_adopted: s.gatePassAdopted,
       band_p25_usd: s.v.bandP25,
       band_p75_usd: s.v.bandP75,
       category_adjustment: s.v.adjustment,
@@ -2321,9 +3066,11 @@ export function buildBoard(snapshot: Snapshot, fitted: FittedModel, model: Model
       growth_pct: s.v.growthPct,
       age_days: s.v.age,
       basis: 'fitted',
+      ood: s.v.ood,
     },
     farm_steps: farmSteps(s.p, s.v, s.verdict, s.cost).map(stepText),
   }));
+  return { rows, gateTest };
 }
 
 /** The live-token protocols, by market cap, for the dashboard's Live token view. */
@@ -2365,27 +3112,84 @@ export function radarRow(row: BoardRow, onWatchlist: boolean): RadarRow {
     predicted_log_value: row.model.predicted_log_value,
     value_if_launches_usd: row.model.value_if_launches_usd,
     launch_odds: row.model.launch_odds,
+    launch_odds_platt: row.model.launch_odds_platt,
     break_even_odds: row.model.break_even_odds,
     expected_value_usd: row.model.expected_value_usd,
     ev_conservative_usd: row.model.ev_conservative_usd,
     ev_optimistic_usd: row.model.ev_optimistic_usd,
+    ev_p10_usd: row.model.ev_p10_usd,
+    ev_p25_usd: row.model.ev_p25_usd,
+    ev_p50_usd: row.model.ev_p50_usd,
+    ev_p75_usd: row.model.ev_p75_usd,
+    ev_p90_usd: row.model.ev_p90_usd,
     prob_negative_return: row.model.prob_negative_return,
+    prob_negative_analytic: row.model.prob_negative_analytic,
     p10_value_usd: row.model.p10_value_usd,
     ev_at_p10_usd: row.model.ev_at_p10_usd,
+    ev_at_p25_value_if_launches_usd: row.model.ev_at_p25_value_if_launches_usd,
+    ev_at_p75_value_if_launches_usd: row.model.ev_at_p75_value_if_launches_usd,
+    ev_mean_base_rate_usd: row.model.ev_mean_base_rate_usd,
+    ev_mean_platt_usd: row.model.ev_mean_platt_usd,
+    ev_mean_conservative_usd: row.model.ev_mean_conservative_usd,
+    gate_pass_conservative: row.model.gate_pass_conservative,
+    gate_pass_adopted: row.model.gate_pass_adopted,
     band_p25_usd: row.model.band_p25_usd,
     band_p75_usd: row.model.band_p75_usd,
     category_adjustment: row.model.category_adjustment,
     chain_adjustment: row.model.chain_adjustment,
+    ood: row.model.ood,
   };
 }
 
+/** Spearman rank correlation between two orderings of the same slugs. */
+export function spearmanRankCorrelation(orderA: string[], orderB: string[]): number {
+  const rankA = new Map(orderA.map((s, i) => [s, i + 1]));
+  const rankB = new Map(orderB.map((s, i) => [s, i + 1]));
+  const common = orderA.filter((s) => rankB.has(s));
+  const n = common.length;
+  if (n < 2) return 0;
+  let sumSq = 0;
+  for (const s of common) {
+    const d = rankA.get(s)! - rankB.get(s)!;
+    sumSq += d * d;
+  }
+  return 1 - (6 * sumSq) / (n * (n * n - 1));
+}
+
+/** The raw Polymarket EV simulation output (charter v1.2): the full seeded draw
+ * array — the launch uniforms and the value draws — plus the statistics computed
+ * from it, so the contradiction the audit found can be checked draw by draw. */
+export interface EvSimulationExport {
+  slug: string;
+  name: string;
+  seed: number;
+  n_draws: number;
+  predicted_log_value: number;
+  plan_cost_usd: number;
+  band_halfwidth_dex: number;
+  band_multiplier: number;
+  sigma_dex: number;
+  launch_odds_adopted: number;
+  launch_odds_base_rate: number;
+  launch_odds_platt: number;
+  launch_odds_conservative: number;
+  /** The raw draws: [launch uniform u, value in USD] per draw, in draw order. */
+  draws: [number, number][];
+  /** The statistics computed from this exact array. */
+  stats: EvSimulation;
+}
+
 /** Everything the dashboard renders, from the snapshot. */
-export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData } {
+export function buildRadar(
+  snapshot: Snapshot,
+  model: ModelConstants = MODEL,
+): { board: BoardRow[]; radar: RadarData; evSimulationExport: EvSimulationExport | null } {
   const fitted = fitModel(snapshot, model);
-  const board = buildBoard(snapshot, fitted, model);
-  // The EV end-to-end audit (charter v1.1): every farm row, plus every row the old
-  // EV>0-only rule would have farmed but the margin rule demotes — the audit trail
-  // for the verdicts.
+  const { rows: board, gateTest } = buildBoard(snapshot, fitted, model);
+  fitted.validation.gate_test = gateTest;
+  // The EV end-to-end audit (charter v1.2): every farm row, plus every row with a
+  // positive mean EV under the adopted odds (the rows the old EV>0-only rule
+  // would have farmed) — the audit trail for the verdicts, with the stress test.
   fitted.validation.ev_audit = {
     rows: board
       .filter((r) => r.verdict === 'farm' || r.model.expected_value_usd > 0)
@@ -2394,22 +3198,121 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
         name: r.name,
         value_if_launches_usd: r.model.value_if_launches_usd,
         launch_odds: r.model.launch_odds,
+        launch_odds_platt: r.model.launch_odds_platt,
         break_even_odds: r.model.break_even_odds,
         plan_cost_usd: r.plan_cost_usd,
         ev_central_usd: r.model.expected_value_usd,
         ev_conservative_usd: r.model.ev_conservative_usd,
         ev_optimistic_usd: r.model.ev_optimistic_usd,
         prob_negative_return: r.model.prob_negative_return,
+        prob_negative_analytic: r.model.prob_negative_analytic,
         p10_value_usd: r.model.p10_value_usd,
         ev_at_p10_usd: r.model.ev_at_p10_usd,
+        ev_at_p25_value_if_launches_usd: r.model.ev_at_p25_value_if_launches_usd,
+        ev_at_p75_value_if_launches_usd: r.model.ev_at_p75_value_if_launches_usd,
+        ev_mean_base_rate_usd: r.model.ev_mean_base_rate_usd,
+        ev_mean_platt_usd: r.model.ev_mean_platt_usd,
+        ev_mean_conservative_usd: r.model.ev_mean_conservative_usd,
+        gate_pass_conservative: r.model.gate_pass_conservative,
+        is_ood: r.model.ood.is_ood,
         verdict: r.verdict,
         verdict_rule:
           r.verdict === 'farm'
-            ? 'FARM: EV > 0 at the central value AND at the P25 value (charter v1.1 safety margin).'
-            : 'Demoted by the v1.1 margin rule: EV > 0 centrally but ≤ 0 at the P25 value — no safety margin.',
+            ? `FARM: the adopted gate (variant ${gateTest.adopted}) passes under the conservative launch odds (${fitted.launchOddsDecision.conservative_lower_bound}).`
+            : r.model.gate_pass_adopted
+              ? 'Demoted by the v1.2 stress test: the adopted gate passes under the adopted launch odds but NOT under the conservative launch odds.'
+              : 'Not a farm: the adopted gate does not pass under the adopted launch odds.',
       })),
     assumptions: EV_ASSUMPTIONS,
   };
+  // The floor ranking diagnostic (charter v1.2): for each floor, refit the
+  // selected estimator on the 70 dated comps and re-rank the board; compare
+  // against the locked $25M board by Spearman ρ, top-20 overlap and top-10
+  // changes. The floor stays $25M — this reports, it does not select.
+  const baseOrder = board.map((r) => r.slug);
+  const baseTop20 = new Set(baseOrder.slice(0, 20));
+  const baseTop10 = baseOrder.slice(0, 10);
+  const comps = liveComps(snapshot);
+  const selected = fitted.validation.model_selection.selected;
+  for (const fr of fitted.validation.floor_sensitivity.rows) {
+    if (fr.floor_usd === 25_000_000) {
+      fr.spearman_vs_25m = 1;
+      fr.top20_overlap_vs_25m = 20;
+      fr.top10_changes_vs_25m = 0;
+      continue;
+    }
+    const m = { ...model, size_floor_usd: fr.floor_usd };
+    const f = fitRegression(comps, snapshot.as_of, m, selected);
+    const rescored = board.map((r) => {
+      const p = snapshot.protocols.find((x) => x.slug === r.slug)!;
+      const pred = predictLog(p, snapshot.as_of, f.beta, f.adj, f.chainAdj, m);
+      const valueIf = Math.min(model.value_max, Math.max(model.value_min, Math.round(10 ** pred)));
+      return { slug: r.slug, implied: valueIf * r.model.launch_odds };
+    });
+    rescored.sort((a, b) => b.implied - a.implied || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+    const order = rescored.map((x) => x.slug);
+    fr.spearman_vs_25m = round4(spearmanRankCorrelation(baseOrder, order));
+    fr.top20_overlap_vs_25m = order.slice(0, 20).filter((s) => baseTop20.has(s)).length;
+    fr.top10_changes_vs_25m = order.slice(0, 10).filter((s, i) => baseTop10[i] !== s).length;
+  }
+  // The raw Polymarket EV simulation output: the full seeded draw array, so the
+  // contradiction the audit found (P25 EV vs P(negative)) can be checked draw by
+  // draw. Polymarket is the top row; if it is not on the board, no export.
+  let evSimulationExport: EvSimulationExport | null = null;
+  const poly = board.find((r) => r.slug === 'polymarket-international');
+  if (poly !== undefined) {
+    const sigma = fitted.bandHalfwidth > 0 ? (fitted.bandHalfwidth * poly.model.ood.band_multiplier) / 0.6745 : 0.01;
+    const pairs = simulateEvPairs(
+      poly.model.predicted_log_value,
+      poly.plan_cost_usd,
+      sigma,
+      EV_SIM_DRAWS,
+      fnv1aHash('polymarket-international'),
+      model,
+    );
+    const simStats = evStatsFromPairs(pairs, poly.model.launch_odds, poly.plan_cost_usd, model);
+    const conservativeStats = evStatsFromPairs(pairs, fitted.launchOddsDecision.conservative_lower_bound, poly.plan_cost_usd, model);
+    evSimulationExport = {
+      slug: 'polymarket-international',
+      name: poly.name,
+      seed: fnv1aHash('polymarket-international'),
+      n_draws: EV_SIM_DRAWS,
+      predicted_log_value: poly.model.predicted_log_value,
+      plan_cost_usd: poly.plan_cost_usd,
+      band_halfwidth_dex: fitted.bandHalfwidth,
+      band_multiplier: poly.model.ood.band_multiplier,
+      sigma_dex: round4(sigma),
+      launch_odds_adopted: poly.model.launch_odds,
+      launch_odds_base_rate: fitted.seasoning.base_rate,
+      launch_odds_platt: poly.model.launch_odds_platt,
+      launch_odds_conservative: fitted.launchOddsDecision.conservative_lower_bound,
+      // Full-precision uniforms: rounding a u of 0.99996 to 1.0000 would put a
+      // draw outside [0, 1) and break exact reproduction of the simulation.
+      draws: pairs.u.map((u, i) => [u, pairs.values[i]!] as [number, number]),
+      stats: {
+        n_draws: EV_SIM_DRAWS,
+        seed: fnv1aHash('polymarket-international'),
+        ev_mean_usd: Math.round(simStats.mean),
+        ev_p10_usd: Math.round(simStats.p10),
+        ev_p25_usd: Math.round(simStats.p25),
+        ev_p50_usd: Math.round(simStats.p50),
+        ev_p75_usd: Math.round(simStats.p75),
+        ev_p90_usd: Math.round(simStats.p90),
+        prob_negative: round4(simStats.probNegative),
+        prob_negative_analytic: poly.model.prob_negative_analytic,
+        ev_at_p25_value_if_launches_usd: poly.model.ev_at_p25_value_if_launches_usd,
+        ev_at_p75_value_if_launches_usd: poly.model.ev_at_p75_value_if_launches_usd,
+        ev_at_p10_value_if_launches_usd: poly.model.ev_at_p10_usd,
+        p10_value_usd: poly.model.p10_value_usd,
+        ev_mean_base_rate_usd: poly.model.ev_mean_base_rate_usd,
+        ev_mean_platt_usd: poly.model.ev_mean_platt_usd,
+        ev_mean_conservative_usd: poly.model.ev_mean_conservative_usd,
+        ev_p25_conservative_usd: Math.round(conservativeStats.p25),
+        ev_p50_conservative_usd: Math.round(conservativeStats.p50),
+        ev_p75_conservative_usd: Math.round(conservativeStats.p75),
+      },
+    };
+  }
   const live = liveRows(snapshot);
   const early = board.filter((r) => !snapshot.watchlist.includes(r.slug)).length;
   const radar: RadarData = {
@@ -2432,7 +3335,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     rows: board.map((r) => radarRow(r, snapshot.watchlist.includes(r.slug))),
     live,
   };
-  return { board, radar };
+  return { board, radar, evSimulationExport };
 }
 
 /** The snapshot out of a file's text, refused unless it is the shape the model scores. */

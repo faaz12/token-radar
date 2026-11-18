@@ -1,4 +1,4 @@
-// Token Radar's entrypoint (radar-8, Node 22, standard library only).
+// Token Radar's entrypoint (radar-9, Node 22, standard library only).
 //
 // Reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), scores every
 // pre-token protocol with the Huber-fitted log-log regression in lib/model.ts, writes the ranked
@@ -51,7 +51,7 @@ if (snapshotCheck.errors.length > 0) {
   for (const e of snapshotCheck.errors) process.stderr.write(`token radar: snapshot error: ${e}\n`);
   process.exit(1);
 }
-const { board, radar } = buildRadar(snapshot);
+const { board, radar, evSimulationExport } = buildRadar(snapshot);
 const issue = boardIssue(board, snapshot);
 if (issue !== null) {
   process.stderr.write(`token radar: the model wrote a board the gate refuses: ${issue}\n`);
@@ -61,6 +61,12 @@ if (issue !== null) {
 mkdirSync(out, { recursive: true });
 writeFileSync(join(out, 'board.json'), `${JSON.stringify({ rows: board })}\n`);
 writeFileSync(join(out, 'data.js'), dataScript(radar));
+// The raw Polymarket EV simulation output (charter v1.2): the full seeded draw
+// array, so the P25-EV vs P(negative) contradiction the audit found can be
+// checked draw by draw. Deterministic: the same seed always draws the same array.
+if (evSimulationExport !== null) {
+  writeFileSync(join(out, 'ev-simulation-polymarket.json'), `${JSON.stringify(evSimulationExport)}\n`);
+}
 
 /** Copy one directory's regular files into `to`, skipping names that start with a dot. */
 function copyFiles(from: string, to: string): string[] {

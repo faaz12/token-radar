@@ -4,12 +4,13 @@
 [![rank](https://make.fun/badge/token-radar-01/faaz12/token-radar/rank.svg)](https://make.fun/bounty/token-radar-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
 [![reward](https://make.fun/badge/token-radar-01/faaz12/token-radar/reward.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
 
-A make.fun `token-radar-01` entry (radar-8 model, evaluation charter v1.1).
+A make.fun `token-radar-01` entry (radar-9 model, evaluation charter v1.2).
 It reads a sealed DefiLlama snapshot of 758 protocols, finds the ones that
 record no token, and ranks them by what their launch would be worth — then
 hands in a dashboard a reader can use: the board, a detail view for every
 protocol, and a farm plan for each one, every plan costed with a verdict
-(farm / marginal / skip) from its expected net return with a safety margin.
+(farm / marginal / skip) from its simulated expected net return, farm only
+when the gate passes under conservative launch odds.
 
 ## The model
 
@@ -55,13 +56,18 @@ failed the walk-forward test; shrunk ones did not.
 
 Age is not a regression term. A separate **seasoning curve** — a logistic
 fit of "has a token" on log10(age+1), fitted on all 645 dated protocols in
-the snapshot (base launch rate 16.4%) — prices the odds that a protocol of a
-given age ever launches a token, and the fitted value is multiplied by those
-odds. A protocol that has run two years with no token is priced as a better
-launch bet than one listed last month, and an undated protocol uses the base
-rate. The curve's out-of-sample scores are audited in the dashboard
-(reliability bins, bootstrap intervals, ROC/PR AUC, a Platt recalibration
-tested on an untouched chronological set) — see the seasoning section below.
+the snapshot (base launch rate 16.4%) — describes how the odds of ever
+launching a token rise with age. Under charter v1.2 the curve is **diagnostic
+only: the board uses the base rate (16.4%) for every row**, because the curve
+does not beat the base rate on both Brier and log-loss on the untouched
+chronological test set (see the launch-probability audit below), and its
+improvement over the base rate is not statistically significant. A protocol
+that has run two years with no token is still shown by the curve as a better
+launch bet than one listed last month — but no verdict is priced on that
+difference until a curve validates. The curve's out-of-sample scores are
+audited in the dashboard (reliability bins, bootstrap intervals, ROC/PR AUC,
+a Platt recalibration tested on an untouched chronological set, calibration
+and discrimination reported separately per predictor).
 
 The fit is validated **four ways** at run time, and the dashboard shows all
 four: walk-forward on the dated comparables only (oldest 70% fit, newest 30%
@@ -85,7 +91,7 @@ dated comparables (80% band ±0.9769 dex holding 81.4%, 90% band ±1.4768 dex
 holding 91.3%). The nested 80% fold is a hard outlier (1.0483 dex) and is
 diagnosed in the dashboard, not dropped. No protocol name is ever
 special-cased. The radar-7 comparison of 2.77x vs the leader's reported
-3.21x is **not** claimed under charter v1.1: the targets are not the same
+3.21x is **not** claimed under charter v1.2: the targets are not the same
 (snapshot market cap vs median FDV days 3–7), so the numbers are not
 comparable.
 
@@ -167,7 +173,14 @@ stratified split, $100M wins cross-validation (0.5012 vs 0.5478 at $25M).
 Choosing the floor inside the training folds scores worse pooled (0.3885 vs
 fixed $25M 0.3728) and flips per fold ($100M, $100M, $0M, $0M, $0M), so the
 floor is a locked stability constant, not a tuned optimum, and the model keeps
-the established $25M. The nested folds at $25M (OLS, radar-8) are 0.2747 /
+the established $25M. Re-run for radar-9 with the locked OLS fit and the
+selection metric, the pooled error by floor is $0M 0.3242, $10M 0.3090,
+**$25M 0.3203**, $50M 0.4191, $100M 0.6028: $10M wins by 0.011 dex, $100M
+collapses, and choosing the floor inside the training folds ($25M, $50M,
+$50M, $0M) scores 0.4191 pooled — worse than the locked $25M — so the floor
+stays locked. The re-ranked boards stay close to the $25M board (Spearman ρ
+0.974–0.995, top-20 overlap 18–20 of 20), so the floor moves the ranking
+little even where it moves the fit. The nested folds at $25M (OLS, radar-8) are 0.2747 /
 0.3121 / 0.2329 / 1.0483 / 0.4073 — the 80% fold (7 newest comps) is a hard
 outlier fold, and the pooled median, not any single fold, is the reported
 number. The 80% fold is diagnosed in the dashboard, not dropped: its test
@@ -189,77 +202,131 @@ the launch value is judged on a day-3-to-7 median instead, these numbers are
 not that target. Market cap and FDV are never merged into one target, and
 error-rate comparisons against other entries are valid only when target,
 dates, and error definition match — the radar-7 comparison of 2.77x vs the
-leader's reported 3.21x is not claimed under charter v1.1. And the training
+leader's reported 3.21x is not claimed under charter v1.2. And the training
 set is survivors: 15 protocols in the snapshot hold a token with a zero
 market cap and 14 more are listed on CoinGecko with no cap at all — the
 visible dead — while tokens removed from the index entirely are invisible.
 Failed launches never enter the training set, so the fitted values are
 biased upward for the average protocol. The seasoning curve is calibrated on
-the snapshot itself (actual vs predicted launch rate by age bin, Platt
-adjusted: 0–90d 3.8% vs 2.9%, 90–180d 2.9% vs 6.8%, 180–365d 13.7% vs 11.6%,
-365–730d 12.0% vs 19.2%, 730–1100d 17.1% vs 27.0%, 1100–1500d 26.4% vs 34.5%,
-1500–2200d 33.9% vs 39.7%), and the dashboard shows the full table — note the
-curve now over-predicts in the middle age bins after Platt recalibration.
+the snapshot itself (actual vs predicted launch rate by age bin, raw curve:
+0–90d 3.8% vs 2.4%, 90–180d 2.9% vs 5.2%, 180–365d 13.7% vs 8.6%,
+365–730d 12.0% vs 14.1%, 730–1100d 17.1% vs 19.7%, 1100–1500d 26.4% vs
+25.4%, 1500–2200d 33.9% vs 29.4%), and the dashboard shows the full table —
+the curve under-predicts the 180–365d bin and over-predicts the 365–1100d
+bins, and it is diagnostic only under v1.2.
 
-## The launch-probability audit (charter v1.1)
+## The launch-probability audit (charter v1.2)
 
-Every farm verdict depends on the seasoning curve, so radar-8 audits it
-instead of trusting it. On the 250 pooled fold-local predictions: ROC-AUC
+No farm verdict depends on the seasoning curve any more — radar-9 audits it
+and then sets it aside. On the 250 pooled fold-local predictions: ROC-AUC
 0.5575, PR-AUC 0.24 against a base launch rate of 16.4% — the ranking signal
 is weak. The improvement over predicting the base rate is **not
 statistically significant**: the bootstrap 95% interval for the Brier
 improvement is [−0.0067, +0.0025] and for log-loss [−0.0394, +0.0126] — both
 straddle zero. The reliability bins show the curve under-predicts in its
 biggest bin (predicted 5–10%, n=164: actual 14.0% vs predicted 7.5%). A Platt
-recalibration (a = 0.5335, b = 1.0885) was adopted under the charter's
-prespecified rule: fitted on fold-local predictions from cutoffs 50/60/70 and
-tested on the untouched 80/90 set, it beats the raw curve on both Brier
-(0.1144 vs 0.1170) and log-loss (0.3930 vs 0.4115). Honestly, though: on that
-same untouched test set the **base rate itself** scores Brier 0.1131 and
-log-loss 0.3864 — better than both the raw curve and the Platt curve. The
-curve is kept because it ranks protocols by age where the base rate cannot,
-not because it beats the base rate on the latest period. Verdict: the
-seasoning curve is usable-with-caveats (pooled Brier 0.1194 vs base 0.1233,
-log-loss 0.4097 vs base 0.4164, ECE 0.0648), and every farm EV inherits its
-limits — the EV audit below shows the exposure.
+recalibration (a = 0.5335, b = 1.0885) was fitted on fold-local predictions
+from cutoffs 50/60/70 and tested on the untouched 80/90 set (n=100): it beats
+the raw curve on both Brier (0.1144 vs 0.1170) and log-loss (0.3930 vs 0.4115)
+— but it does **not** beat the base rate on both, so under the charter's
+prespecified adoption rule it is **NOT adopted**. The base rate itself scores
+Brier 0.1131 and log-loss 0.3864 on that untouched test set, better than both
+the raw curve and the Platt curve. Calibration and discrimination, reported
+separately on the same untouched rows: base rate ECE 0 / ROC-AUC 0.5; raw
+curve ECE 0.0703 / ROC-AUC 0.6693; Platt curve ECE 0.0518 / ROC-AUC 0.6693 —
+the curve discriminates a little (0.67 vs 0.5) but is worse calibrated and
+worse scored overall than a constant. Verdict: the seasoning curve is
+usable-with-caveats as a diagnostic (pooled Brier 0.1194 vs base 0.1233,
+log-loss 0.4097 vs base 0.4164, ECE 0.0648), and the board prices every row
+on the base rate until a better launch-probability model validates. The
+conservative lower bound for the farm gate is the 2.5th percentile of a
+2,000-resample bootstrap of the base rate over the 645 dated protocols
+(seed 20261107): 13.64%.
 
 ## Farm verdicts and the EV audit
 
-Every farm plan carries a **verdict** from its **expected net return**:
-EV = launch odds × 0.25% × value-if-launches − plan cost, for a standard
-$10,000 deposit (plus seven transactions of gas and the opportunity cost of
-locking the deposit for the hold window at 10% a year). Charter v1.1 adds a
-**safety margin: FARM only when EV is positive at BOTH the central value and
-the P25 value**; marginal when EV is positive centrally but not at P25, or
-negative with break-even odds at most 33%; skip otherwise. The audit table in
-the dashboard shows, for the farm row and every row demoted by the margin
-rule, the central / P25 / P75 EVs, the probability of a negative return, and
-the P10 value with its EV. The assumptions are verified, not invented: farmer
-share 0.25% of the launch value (assumed, not verified from data); exit value
-= snapshot market cap (no slippage, no liquidity, no lockup modeled — the
+Every farm plan carries a **verdict** from its **expected net return**,
+computed from **one seeded simulation array per protocol** (20,000 draws:
+launch Bernoulli × lognormal value, σ from the 50% band / 0.6745, ×1.5 for
+out-of-distribution rows). The mean of that array is the expected net
+return — EV = p_L × 0.25% × E[value if it launches] − plan cost, for a
+standard $10,000 deposit (plus seven transactions of gas and the opportunity
+cost of locking the deposit for the hold window at 10% a year) — and the
+P10/P25/P50/P75 and the probability of a negative return are quantiles of
+the **same** array. The mean uses the lognormal MEAN of the value, not its
+median: with σ ≈ 0.43–0.95 dex the mean sits far above the median, and the
+mean is what an expected value is. Charter v1.2 adds a **stress test and a
+gate: FARM only when the adopted gate passes under the CONSERVATIVE launch
+odds** (the 13.64% bootstrap lower bound); marginal when the mean EV is
+positive under the adopted odds but the gate fails the conservative test, or
+negative with break-even odds at most 33%; skip otherwise. The audit table
+in the dashboard shows, for every row with a positive mean EV, the mean EV
+under all three launch-probability assumptions (base rate / Platt /
+conservative), the P25 of the net return, P(negative) simulated and analytic,
+and the gate flags. The assumptions are stated, not measured: farmer share
+0.25% of the launch value (assumed, not verified from data); exit value =
+snapshot market cap (no slippage, no liquidity, no lockup modeled — the
 snapshot carries no unlock schedule, no order-book depth, and no fee data, so
 none is invented); farming costs = gas per chain + opportunity cost of the
 $10,000 deposit at 10% annual over the hold window (60 days < 180d age, 45
 days < 365d, else 30 days); a non-launch loses the full plan cost.
 
-On this snapshot: **1 farm / 47 marginal / 150 skip**. The margin rule
-demotes 16 rows that are EV-positive centrally: predict-fun, sentora-curator,
-apex-omni, bitfi-basis, usdd, lofty, steakhouse-financial, veda,
-estate-protocol, opentrade, symbiotic, b14g, hive-protocol, plume-vaults,
-gauntlet, cian-yield-layer. The single farm is **polymarket-international**:
-implied $34.4M (value if it launches $82.7M), launch odds 41.6% (Platt
-adjusted), break-even 4.9%, EV central +$75,914, EV at P25 +$22,148, EV at P75
-+$219,365, probability of a negative return 59.2%, P10 value $12.8M with EV
-at P10 +$3,242. The top 5 by implied value: polymarket-international $34.4M
-(41.6% / 4.9%, EV +$75,914), predict-fun $10.6M (25.3% / 9.6%, EV +$16,407,
-P25 −$156 — marginal), sentora-curator $9.9M (15.8% / 6.5%, EV +$14,531),
-apex-omni $6.7M (26.8% / 16.1%, EV +$6,694), bitfi-basis $6.6M (21.8% /
-13.3%, EV +$6,418). The 41.6% next to Polymarket is its launch odds (p_L),
-not its break-even odds (p_BE 4.9%). The top 5 by expected return are the
-same as the top 5 by implied value. Radar-7's 11 farms shrank to 1 because
-the margin rule and the dated-only OLS fit moved the numbers — not because
-the board got worse, but because the verdict now has to survive its own
-downside.
+**The radar-8 contradiction, and what caused it.** Radar-8 reported
+Polymarket with "P25 EV +$22,148" and "P(negative) 59.2%" — mathematically
+inconsistent: if 59.2% of outcomes are negative, the 25th percentile cannot
+be positive. The cause was a mislabeled statistic: the "+$22,148" was the
+expected value **at the P25 value conditional on launch** (p_L × 0.25% ×
+V_P25 − cost), not a quantile of the net-return distribution, while P(neg)
+was unconditional. Radar-9 fixes the math, not the label: every statistic
+comes from the one simulation array. For Polymarket under the base rate the
+corrected numbers are mean EV +$301,457, P25 of the net return −$10,084 (the
+plan cost — 83.6% of draws are non-launches, a point mass at −cost), P50
+−$10,084, P75 −$10,084, P90 +$93,013, P(negative) 84.9% simulated / 84.9%
+analytic. Consistent at last: with 83.6% of the mass at −cost, the P25 must
+be −cost, and the mean is positive only because the lognormal right tail is
+enormous (E[value] ≈ $894M against a $82.7M median). The raw simulation
+output for Polymarket is exported as `ev-simulation-polymarket.json` — the
+full 20,000-draw array — so the contradiction can be checked draw by draw.
+A leakage-injection check now enforces the consistency on all 198 rows
+(monotone quantiles, P(neg) in [0, 1] and ≥ 1 − p_L, simulated vs analytic
+P(neg) within 0.02).
+
+**The gate test.** After the math was fixed, two candidate gates were tested
+honestly on the corrected statistics with a rule prespecified before the
+results were seen: adopt the variant that both fires (farms ≥ 1 row) and
+filters (rejects ≥ 1 positive-mean-EV row through its additional condition);
+if both qualify, the one with the lower maximum P(negative) among its farms;
+if neither qualifies, keep the pre-existing rule (a) and report the farm
+count as-is. Variant (a) — mean EV > 0 AND P25 of the net return > 0 —
+farms **0** rows: with launch odds at the base rate (16.4%) the 25th
+percentile of every row's net return is −cost. Variant (b) — the Gemini
+proposal, mean EV > 0 AND the P50-to-P25 downside at most half the
+P50-to-P75 upside — farms **all 151** positive-EV rows and filters nothing:
+with launch odds below 50% the P50-to-P25 downside is exactly $0 (both
+quantiles are −cost), so its additional condition never binds, and it would
+farm rows with up to a 93% chance of loss. Neither variant both fires and
+filters, so the prespecified rule keeps (a) and the board has **0 farms**.
+That is the honest result of the base-rate model — a farm gate that cannot
+fire while p_L stays below 25% — not a bug to engineer around.
+
+On this snapshot: **0 farm / 151 marginal / 47 skip**. All 151
+positive-mean-EV rows are marginal: the gate passes under the adopted odds
+for none of them once the conservative test is applied, because every row's
+P25 net return is −cost. The top 5 by implied value: polymarket-international
+$13.6M (16.4% / 4.9%, EV +$301,457, P25 −$10,084, P(neg) 84.9%),
+sentora-curator $10.3M (16.4% / 6.5%, EV +$61,769), predict-fun $6.9M
+(16.4% / 9.6%, EV +$44,453), bittensor-dtao $5.8M (16.4% / 11.5%, EV
++$166,611), nonce-capital $5.2M (16.4% / 12.8%, EV +$154,849). The 16.4%
+next to every row is its launch odds (p_L, the base rate), not its break-even
+odds. The top 5 by expected return are NOT the same as the top 5 by implied
+value — polymarket-international $301,457, bittensor-dtao $166,611,
+nonce-capital $154,849, drakewell $114,387, veda $100,307 — because the mean
+EV uses the lognormal mean, which grows with σ, and out-of-distribution rows
+carry the ×1.5 wider band. Radar-8's single farm (Polymarket, on Platt odds
+of 41.6%) is gone: under the base rate its P25 net return is −$10,084, so
+the gate does not pass — not because the board got worse, but because the
+verdict now has to survive its own downside, and the launch odds that
+supported it did not validate.
 
 ## What radar-7 changed
 
@@ -301,6 +368,23 @@ is the fit's own base rate, not a coin flip.
 | Untouched final test | nested 90% fold (newest 7 comps), used for no choice | 0.4073 dex (2.56x) |
 | Leakage tests updated | undated-exclusion + coef_growth === 0 + EV margin rule | 15 checks pass (see `scripts/leakage-test.ts`) |
 
+## What radar-9 changed
+
+| change | what was tested | outcome |
+|---|---|---|
+| Radar-8 frozen as v1.1 before any fitting | two builds byte-identical; tag `radar-8-v1.1` on 44dba0e; freeze dir with board, data, dossier, metrics, charter v1.1 | frozen; radar-8 numbers are exploratory under charter v1.2 |
+| Charter bumped to v1.2, locked before fitting | — | `EVALUATION_CHARTER.md` v1.2: one-simulation EV, base-rate fallback, stress test, gate test, nested reconciliation, OOD detection, floor sensitivity, undated "unsupported estimates" |
+| EV contradiction resolved | raw Polymarket simulation exported (`ev-simulation-polymarket.json`, full 20,000-draw array); all statistics recomputed from the one array | cause found: radar-8's "P25 EV +$22,148" was the EV at the P25 value conditional on launch, mislabeled as a net-return quantile. Corrected: P25 net return −$10,084, P(neg) 84.9% sim / 84.9% analytic — consistent |
+| Platt replaced by base-rate fallback | base rate vs raw curve vs Platt on the same untouched 80/90 test rows; calibration (ECE) and discrimination (ROC-AUC) reported separately | **base rate adopted (16.4%)**: Brier 0.1131 / log-loss 0.3864 / ECE 0 / ROC 0.5 beats raw (0.1170 / 0.4115 / 0.0703 / 0.6693) and Platt (0.1144 / 0.3930 / 0.0518 / 0.6693) on both scoring rules; all 198 EVs recomputed |
+| EV stress test | mean EV under base rate / Platt / conservative lower bound (13.64%); FARM only under the conservative assumption | 0 farms: every row's P25 net return is −cost under base-rate odds, so the conservative gate passes for no row |
+| Gate test (two variants, prespecified rule) | (a) mean EV > 0 AND P25 > 0; (b) mean EV > 0 AND P50-to-P25 downside ≤ 50% of P50-to-P75 upside; adopt the variant that both fires and filters | neither fires and filters: (a) farms 0, (b) farms all 151 and filters nothing (its downside is $0 when p_L < 50%) — prespecified rule keeps (a); 0 farm / 151 marginal / 47 skip |
+| Nested reconciliation | selection pooled (0.3203) vs all-folds pooled (0.3284) with exact observation sets, fold dates, aggregation rule | reconciled: the 0.0081 dex gap is the untouched 90% fold (7 newest comps, 0.4073 dex) included in one number and excluded from the other; both reproduce exactly |
+| Out-of-distribution detection | chain / category seen in training, TVL / age in training range, nearest-comp distance, per row | **104 of 198 rows OOD** (54 unseen chain, 35 unseen category, 1 TVL out, 30 age out); OOD rows get a ×1.5 wider band and "extrapolation" confidence, never in-distribution confidence |
+| TVL floor sensitivity | $0M/$10M/$25M/$50M/$100M with the selected estimator on the same 70 dated comps; floor chosen inside training folds only | $25M stays locked: selection pooled $0M 0.3242, $10M 0.3090, $25M 0.3203, $50M 0.4191, $100M 0.6028; per-fold floor choice scores 0.4191 pooled, worse than locked $25M; Spearman vs $25M board 0.974–0.995 |
+| Undated labeled "unsupported estimates" | reference table kept, no calibrated bands | undated rows carry no verdict and no confidence band; error/coverage reported separately (dated-only 0.5044 dex, undated-only 0.6313 dex, 50% band covers 27.3% of undated) |
+| Dashboard reworked to v1.2 | sandbox verdicts recomputed with the analytic equivalent of the simulation gate (closed-form lognormal mean + mixture quantiles, no Monte Carlo) | lede, model panel, seasoning (diagnostic), launch-odds decision, gate test, nested reconciliation, OOD, floor sensitivity, EV audit and detail view all show v1.2 numbers; sandbox re-ranks with the same gate |
+| Leakage tests updated to v1.2 | EV consistency (monotone quantiles, P(neg) ≥ 1 − p_L, sim vs analytic ≤ 0.02), P25 = −cost below 25% odds, base-rate decision, nested reconciliation, OOD flags, floor grid, gate-test match | 24 checks pass (see `scripts/leakage-test.ts`); farm-count checks never require ≥ 1 farm |
+
 The board covers all 198 rankable pre-token protocols: the 40-protocol
 watchlist (TVL ≥ $50M, no token on record) plus every other pre-token
 protocol in the snapshot. Wrapped, staked and bridged products of tokens that
@@ -328,8 +412,8 @@ node scripts/leakage-test.ts --input <snapshot.json>
 
 - `main.ts` — entrypoint: reads the snapshot, validates it, writes the board, data, dashboard, screenshots and dossier.
 - `lib/model.ts` — the fitted regression, the walk-forward validation, the farm plans with verdicts, and the board checks.
-- `EVALUATION_CHARTER.md` — the locked evaluation charter (v1.1): question, target, population, splits, success rule, tuning boundary, leakage checks. Radar-7's v1.0 charter is preserved in the radar-7 freeze.
-- `scripts/leakage-test.ts` — the leakage-injection self-test (11 checks; not copied to /output).
+- `EVALUATION_CHARTER.md` — the locked evaluation charter (v1.2): question, target, population, splits, success rule, tuning boundary, leakage checks. Radar-8's v1.1 charter is preserved in the radar-8 freeze.
+- `scripts/leakage-test.ts` — the leakage-injection self-test (24 checks; not copied to /output).
 - `dashboard/` — the static page (index.html, app.css, app.js). Renders with no network.
 - `screenshots/` — the board, a protocol's detail view, a filtered view.
 - `vendor/makefun-board.ts` — make.fun's dossier library (vendored from the kit).
