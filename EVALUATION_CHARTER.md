@@ -16,6 +16,31 @@ v1.6** and must not be quoted as v1.6 results. Radar-12 is frozen in
 CHARTER-v1.5.md, FREEZE.md, snapshot sha256
 42a71213519479f3a180cc5010cbbf6bd18a2447fa0ad29e4c5122b6c9184393).
 
+## Errata to v1.6 (2026-11-18, before Q11 — prose correction, no procedure change)
+
+Two sentences in this charter state the Wilson cross-check in a form that
+is statistically unimplementable, and are corrected here. The original
+sentences stay in the text below for the audit trail; this erratum
+supersedes them.
+
+- "A simulated P(negative) whose Wilson interval does not contain the
+  analytic value fails the build." (Monte Carlo confidence intervals)
+- "every simulated P(negative) lies inside its 95% Wilson interval
+  around the analytic value, and |simulated − analytic| ≤ 0.02"
+  (v1.6 checks)
+
+A 95% interval misses its target about 5% of the time by construction,
+so requiring all 396 simulated P(negative) values to lie inside their
+intervals cannot hold: the expected miss count is ~20 of 396. The rule
+as implemented in the leakage test — and as radar-13 was actually
+built and tested under — is the aggregate form: **Wilson misses ≤ 33
+of 396** (the 99.9% upper bound of the binomial miss count at a 5%
+mean) **and |simulated − analytic| ≤ 0.02 for every row**. Observed
+radar-13: 17 misses of 396 (≈ 4.3%, the expected rate), max gap
+0.0082 — passes. This erratum corrects the prose to the rule as
+implemented and tested; it changes no procedure, no board number, and
+no result. Radar-13 remains a v1.6 result.
+
 ## Why v1.3 exists — the defect it fixes
 
 Under v1.2 the adopted gate (variant a: mean EV > 0 AND P25 of the net
