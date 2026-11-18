@@ -1,4 +1,4 @@
-// Leakage-injection self-test (radar-12, charter v1.5): verifies the pipeline catches
+// Leakage-injection self-test (radar-13, charter v1.6): verifies the pipeline catches
 // doctored snapshots and that no feature or adjustment peeks past a fold's cutoff.
 //
 // Run from the entry directory:
@@ -8,7 +8,7 @@
 
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { MODEL, ageDays, analyticGateStats, analyticVerdict, buildRadar, features, fitModel, fitRegression, liveComps, nestedSelectionMetric, parseSnapshot, undatedComps, validateSnapshot } from '../lib/model.ts';
+import { EV_SIM_DRAWS, MODEL, ageDays, analyticGateStats, analyticLayerVerdict, borderlineInfo, buildRadar, features, fitModel, fitRegression, gatePasses, liveComps, nestedSelectionMetric, parseSnapshot, undatedComps, validateSnapshot, wilsonInterval } from '../lib/model.ts';
 import type { Snapshot, SnapshotProtocol } from '../lib/model.ts';
 
 /** --name <value> out of the arguments, or the fallback. */
@@ -123,39 +123,66 @@ check(
   `cutoff ${cutoffDate}, ${liveComps(truncated).length} comps`,
 );
 
-// 11. Verdicts are EV-based under the charter v1.3 decision engine: a farm row passes
-//     the ADOPTED gate under the CONSERVATIVE launch odds, and no marginal row does
-//     unless it is OOD-blocked (major tier or nearest comparable > 0.5 dex —
-//     6 rows in radar-12). The farm count may legitimately be ZERO — the gate is not
+// 11. Verdicts are EV-based under the charter v1.6 decision engine: a farm row passes
+//     the ADOPTED gate under the CONSERVATIVE launch odds (analytic statistics),
+//     and no marginal row does unless it is OOD-blocked (major tier or nearest
+//     comparable > 0.5 dex — 6 rows in radar-12) or demoted by a v1.6 guard
+//     (BORDERLINE or UNSTABLE). The farm count may legitimately be ZERO — the gate is not
 //     a quota, and this check must never require >= 1 farm. No skip row has a
-//     positive mean EV. The P25 > 0 requirement is policy-(a)-only: under (b) a farm
-//     needs conditional mean EV > 3x plan cost, under (c) P(negative) <= 0.90 — so
-//     the farm-row check is policy-aware, never hard-coded to (a). The adopted-gate
-//     flag is NOT required on farm rows: the adopted and conservative sims are
-//     separate 20,000-draw estimates, and a row sitting at the ceiling can pass
-//     one and miss the other by Monte Carlo noise (radar-12: t3tris-finance
-//     passes (f) analytically under both layers — adopted P(negative) 0.8765 vs
-//     ceiling 0.8768 — but its sim P(negative) is 0.8771, 0.0003 over). The
-//     analytic crosscheck bounds that class of disagreement.
+//     positive ANALYTIC mean EV under the conservative odds or break-even odds
+//     inside the marginal band (its adopted mean EV may be positive — that is
+//     the adopted-marginal / conservative-skip case, and the production verdict
+//     is skip by the frozen charter rule). The P25 > 0 requirement is
+//     policy-(a)-only: under (b) a farm needs conditional mean EV > 3x plan cost,
+//     under (c) P(negative) <= 0.90 — so the farm-row check is policy-aware,
+//     never hard-coded to (a). The simulation no longer decides anything: the
+//     analytic and simulated statistics describe the same distribution, and a
+//     row sitting at the ceiling can pass one and miss the other by Monte Carlo
+//     noise (radar-12: t3tris-finance passes (f) analytically under both layers
+//     — adopted P(negative) 0.8765 vs ceiling 0.8768 — but its sim P(negative)
+//     is 0.8771, 0.0003 over). Under v1.6 that row is BORDERLINE by the
+//     prespecified rule, and the Wilson crosscheck bounds that class of
+//     disagreement.
 const { board, radar } = buildRadar(snapshot, MODEL, snapshotSha256);
 const farmRows = board.filter((r) => r.verdict === 'farm');
 const marginalRows = board.filter((r) => r.verdict === 'marginal');
 const skipRows = board.filter((r) => r.verdict === 'skip');
+// v1.6: the production verdict is the ANALYTIC verdict under the
+// conservative odds, so every farm row's analytic conservative mean EV is
+// positive (recomputed here from the closed form, not read off the sim).
+const consOddsEarly = fitted.launchOddsDecision.conservative_lower_bound;
 check(
-  'every farm row passes the adopted gate under the conservative launch odds',
-  farmRows.every((r) => r.model.gate_pass_conservative && r.model.expected_value_usd > 0),
+  'every farm row passes the adopted gate under the conservative launch odds and has a positive analytic mean EV there',
+  farmRows.every((r) => {
+    const sigma = fitted.bandHalfwidth > 0 ? (fitted.bandHalfwidth * r.model.ood.band_multiplier) / 0.6745 : 0.01;
+    const sC = analyticGateStats(r.model.predicted_log_value, sigma, r.plan_cost_usd, consOddsEarly, fitted.valueCapUsd, MODEL);
+    return r.model.gate_pass_conservative && sC.evMean > 0;
+  }),
   `${farmRows.length} farm rows (0 is legitimate — the gate is not a quota)`,
 );
 check(
-  'no marginal row passes the adopted gate under the conservative launch odds unless OOD-blocked',
+  'no marginal row passes the adopted gate under the conservative launch odds unless OOD-blocked or demoted by a v1.6 guard',
   marginalRows.every(
-    (r) => !r.model.gate_pass_conservative || r.model.ood.tier === 'major' || r.model.ood.nearest_comp_distance_dex > 0.5,
+    (r) =>
+      !r.model.gate_pass_conservative ||
+      r.model.ood.tier === 'major' ||
+      r.model.ood.nearest_comp_distance_dex > 0.5 ||
+      r.model.farm_demoted_reason !== null,
   ),
-  `${marginalRows.length} marginal rows (${marginalRows.filter((r) => r.model.gate_pass_conservative).length} pass the gate but are OOD-blocked to marginal)`,
+  `${marginalRows.length} marginal rows (${marginalRows.filter((r) => r.model.gate_pass_conservative).length} pass the gate but are OOD-blocked or guard-demoted to marginal)`,
 );
+// v1.6: a skip row is a row whose CONSERVATIVE verdict is skip — its
+// analytic conservative mean EV is non-positive AND its break-even odds
+// sit outside the marginal band. Its adopted mean EV may be positive:
+// that is the adopted-marginal / conservative-skip case, and the
+// production verdict is skip by the frozen charter rule.
 check(
-  'no skip row has a positive expected net return',
-  skipRows.every((r) => r.model.expected_value_usd <= 0),
+  'no skip row has a positive analytic expected net return under the conservative odds or break-even odds inside the marginal band',
+  skipRows.every((r) => {
+    const sigma = fitted.bandHalfwidth > 0 ? (fitted.bandHalfwidth * r.model.ood.band_multiplier) / 0.6745 : 0.01;
+    const sC = analyticGateStats(r.model.predicted_log_value, sigma, r.plan_cost_usd, consOddsEarly, fitted.valueCapUsd, MODEL);
+    return sC.evMean <= 0 && r.model.break_even_odds > MODEL.marginal_break_even;
+  }),
   `${skipRows.length} skip rows`,
 );
 // The gate-test table matches the board: the adopted variant's farm count under the
@@ -189,12 +216,10 @@ check(
           : gateTest.adopted === 'e'
             ? farmRows.every((r) => r.model.ev_conditional_mean_usd > 5 * r.plan_cost_usd && r.model.prob_negative_return <= 0.9)
             : // (f): the farm condition is the ANALYTIC (f) condition under the
-              // conservative odds — the sim gate that produced the verdict is a
-              // 20,000-draw estimate of the same capped-lognormal statistic, so a
-              // farm row may sit within Monte Carlo tolerance (0.005 on P(neg))
-              // of the ceiling analytically. More than 3 such rows, any row
-              // further than 0.005 out, or any row failing the 3x condition, is
-              // a real gate failure, not noise.
+              // conservative odds, and under v1.6 the verdict IS analytic — so
+              // every farm row satisfies it EXACTLY (no Monte Carlo tolerance:
+              // the simulation is only a cross-check now). Any exception is a
+              // real gate failure.
               (() => {
                 const consOdds = fitted.launchOddsDecision.conservative_lower_bound;
                 const ceiling = 1 - 0.75 * consOdds;
@@ -203,8 +228,8 @@ check(
                   const sC = analyticGateStats(r.model.predicted_log_value, sigma, r.plan_cost_usd, consOdds, fitted.valueCapUsd, MODEL);
                   return { slug: r.slug, condOk: sC.conditionalMeanEv > 3 * r.plan_cost_usd, pnegGap: sC.probNegative - ceiling };
                 });
-                const exceptions = perRow.filter((x) => !x.condOk || x.pnegGap > 0.005);
-                return exceptions.length <= 3 && exceptions.every((x) => x.condOk && x.pnegGap <= 0.005);
+                const exceptions = perRow.filter((x) => !x.condOk || x.pnegGap > 0);
+                return exceptions.length === 0;
               })(),
   `adopted policy (${gateTest.adopted}), ${farmRows.length} farm rows`,
 );
@@ -212,8 +237,8 @@ check(
   'gate-test table matches the board farms',
   adoptedVariant.farm_count === board.filter((r) => r.model.gate_pass_adopted).length &&
     farmRows.length ===
-      board.filter((r) => r.model.gate_pass_conservative && r.model.ood.tier !== 'major' && r.model.ood.nearest_comp_distance_dex <= 0.5).length,
-  `variant (${gateTest.adopted}) farms ${adoptedVariant.farm_count} under adopted odds, board farms ${farmRows.length} under conservative odds after the OOD block (${board.filter((r) => r.model.gate_pass_conservative).length} pass the conservative gate, ${board.filter((r) => r.model.gate_pass_conservative).length - farmRows.length} OOD-blocked)`,
+      board.filter((r) => r.model.gate_pass_conservative && r.model.ood.tier !== 'major' && r.model.ood.nearest_comp_distance_dex <= 0.5 && r.model.farm_demoted_reason === null).length,
+  `variant (${gateTest.adopted}) farms ${adoptedVariant.farm_count} under adopted odds, board farms ${farmRows.length} under conservative odds after the OOD block and the v1.6 guards (${board.filter((r) => r.model.gate_pass_conservative).length} pass the conservative gate, ${board.filter((r) => r.model.gate_pass_conservative).length - farmRows.length} OOD-blocked or guard-demoted)`,
 );
 
 // 12. Undated comparables are hard-gated (charter v1.2): the fit uses exactly the 70
@@ -411,9 +436,9 @@ check(
   `adopted (${gateTest.adopted}): (a) ${gateTest.variant_a.farm_count}, (b) ${gateTest.variant_b.farm_count}, (c) ${gateTest.variant_c.farm_count}, (d) ${gateTest.variant_d.farm_count}, (e) ${gateTest.variant_e.farm_count}, (f) ${gateTest.variant_f.farm_count} farms`,
 );
 check(
-  'board farm count equals the conservative-gate pass count under the adopted policy, after the OOD block',
+  'board farm count equals the conservative-gate pass count under the adopted policy, after the OOD block and the v1.6 guards',
   farmRows.length ===
-    board.filter((r) => r.model.gate_pass_conservative && r.model.ood.tier !== 'major' && r.model.ood.nearest_comp_distance_dex <= 0.5).length,
+    board.filter((r) => r.model.gate_pass_conservative && r.model.ood.tier !== 'major' && r.model.ood.nearest_comp_distance_dex <= 0.5 && r.model.farm_demoted_reason === null).length,
   `${farmRows.length} farm rows`,
 );
 
@@ -520,11 +545,22 @@ check(
   audit.refits.map((r) => `${r.dropped}: nested ${r.selection_pooled_dex} (Δ ${r.selection_vs_production_dex}), Spearman ${r.board_spearman_vs_production}, farms ${r.farm_count_adopted_gate}`).join(' | '),
 );
 
-// 29. Ranking stability (charter v1.4): 70 LOPO rows with Spearman in [-1, 1]
-//     and overlaps in range; 4 nested folds with a pooled Spearman; the TVL
-//     perturbation covers both shocks; the analytic verdict agrees with the
-//     simulation verdict on every row, or disagrees only within the $5,000
-//     near-boundary tolerance.
+// 29. Ranking stability (charter v1.4, crosscheck charter v1.6): 70 LOPO rows
+//     with Spearman in [-1, 1] and overlaps in range; 4 nested folds with a
+//     pooled Spearman; the TVL perturbation covers both shocks; the analytic
+//     verdict under the conservative odds IS the production verdict, so it
+//     agrees with the board on every row except the BORDERLINE and stability
+//     demotions — those disagreements are the guards working, and the set
+//     of disagreements must equal exactly the set of guard-demoted rows.
+//     The simulation cross-check is the Wilson containment: every row's
+//     |sim − analytic| P(negative) gap is ≤ 0.02 on both layers, and the
+//     Wilson miss count stays inside the binomial noise bound for a 95%
+//     interval (mean 5% of 396 intervals; the 99.9% upper bound is 33).
+//     NOTE: the charter's literal "every simulated P(negative) lies inside
+//     its 95% Wilson interval" cannot hold for 396 intervals — a 95%
+//     interval misses ~5% of rows by construction — so the check asserts
+//     the statistically correct form (count within the binomial bound +
+//     the 0.02 hard bound), not the literal wording.
 const rs = radar.validation.ranking_stability;
 check(
   'ranking stability covers 70 LOPO rows, 4 nested folds and both TVL shocks',
@@ -539,17 +575,42 @@ check(
   `LOPO median Spearman ${rs.lopo_median_spearman}, worst top-10 ${rs.lopo_worst_top10_overlap}, total verdict moves ${rs.lopo_total_verdict_moves}, nested pooled Spearman ${rs.nested_pooled_spearman}, TVL moves ${rs.tvl_perturbation.map((t) => `${t.shock}: ${t.rows_with_rank_change} rows, max ${t.max_abs_rank_move}`).join('; ')}`,
 );
 const conservativeOdds = fitted.launchOddsDecision.conservative_lower_bound;
-const crossBad = board.filter((r) => {
+const analyticDisagreements = board.filter((r) => {
   const sigma = fitted.bandHalfwidth > 0 ? (fitted.bandHalfwidth * r.model.ood.band_multiplier) / 0.6745 : 0.01;
-  const vAnalytic = analyticVerdict(r.model.predicted_log_value, sigma, r.plan_cost_usd, r.model.launch_odds, conservativeOdds, r.model.break_even_odds, gateTest.adopted, fitted.valueCapUsd, r.model.ood, MODEL);
-  if (vAnalytic === r.verdict) return false;
-  const aStats = analyticGateStats(r.model.predicted_log_value, sigma, r.plan_cost_usd, r.model.launch_odds, fitted.valueCapUsd, MODEL);
-  return Math.abs(aStats.evMean) > 5000;
+  const vAnalytic = analyticLayerVerdict(r.model.predicted_log_value, sigma, r.plan_cost_usd, conservativeOdds, r.model.break_even_odds, gateTest.adopted, fitted.valueCapUsd, r.model.ood, MODEL);
+  return vAnalytic !== r.verdict;
 });
+const guardDemoted = board.filter((r) => r.model.farm_demoted_reason !== null);
+const wilsonMisses =
+  board.filter((r) => {
+    const [loA, hiA] = wilsonInterval(r.model.prob_negative_return, EV_SIM_DRAWS);
+    return !(r.model.prob_negative_analytic >= loA && r.model.prob_negative_analytic <= hiA);
+  }).length +
+  board.filter((r) => {
+    const sigma = fitted.bandHalfwidth > 0 ? (fitted.bandHalfwidth * r.model.ood.band_multiplier) / 0.6745 : 0.01;
+    const sC = analyticGateStats(r.model.predicted_log_value, sigma, r.plan_cost_usd, conservativeOdds, fitted.valueCapUsd, MODEL);
+    const [loC, hiC] = wilsonInterval(r.model.prob_negative_return_conservative, EV_SIM_DRAWS);
+    return !(sC.probNegative >= loC && sC.probNegative <= hiC);
+  }).length;
+const maxSimAnalyticGap = Math.max(
+  ...board.map((r) => {
+    const sigma = fitted.bandHalfwidth > 0 ? (fitted.bandHalfwidth * r.model.ood.band_multiplier) / 0.6745 : 0.01;
+    const sC = analyticGateStats(r.model.predicted_log_value, sigma, r.plan_cost_usd, conservativeOdds, fitted.valueCapUsd, MODEL);
+    return Math.max(Math.abs(r.model.prob_negative_return - r.model.prob_negative_analytic), Math.abs(r.model.prob_negative_return_conservative - sC.probNegative));
+  }),
+);
 check(
-  'analytic verdict agrees with the simulation verdict, or disagrees only within the $5,000 near-boundary tolerance',
-  crossBad.length === 0 && rs.analytic_verdict_crosscheck.n_agree + (board.length - rs.analytic_verdict_crosscheck.n_agree) === board.length,
-  `crosscheck ${rs.analytic_verdict_crosscheck.n_agree}/${rs.analytic_verdict_crosscheck.n_rows} agree, ${crossBad.length} disagreements outside tolerance`,
+  'analytic verdict equals the board verdict except exactly on the guard-demoted rows, and the simulation agrees with the analytic P(negative) within Wilson noise and the 0.02 bound',
+  analyticDisagreements.length === guardDemoted.length &&
+    analyticDisagreements.every((r) => r.model.farm_demoted_reason !== null) &&
+    guardDemoted.every((r) => analyticDisagreements.some((x) => x.slug === r.slug)) &&
+    rs.analytic_verdict_crosscheck.n_agree + rs.analytic_verdict_crosscheck.n_demoted_by_guards === board.length &&
+    rs.analytic_verdict_crosscheck.n_demoted_by_guards === guardDemoted.length &&
+    wilsonMisses <= 33 &&
+    maxSimAnalyticGap <= 0.02 &&
+    Math.abs(rs.analytic_verdict_crosscheck.max_abs_sim_analytic_gap - maxSimAnalyticGap) < 0.001 &&
+    rs.analytic_verdict_crosscheck.wilson_n_inside_adopted + rs.analytic_verdict_crosscheck.wilson_n_inside_conservative === 2 * board.length - wilsonMisses,
+  `crosscheck ${rs.analytic_verdict_crosscheck.n_agree}/${rs.analytic_verdict_crosscheck.n_rows} agree, ${guardDemoted.length} guard-demoted (${guardDemoted.filter((r) => r.model.farm_demoted_reason === 'borderline').length} borderline, ${guardDemoted.filter((r) => r.model.farm_demoted_reason === 'unstable').length} unstable), Wilson misses ${wilsonMisses}/396, max |sim − analytic| gap ${maxSimAnalyticGap.toFixed(4)}`,
 );
 
 // 30. Segmented OOD report (charter v1.4): five segments whose counts sum to the
@@ -738,10 +799,14 @@ check(
 );
 
 // 39. Gate (f) ceiling scaling and gate (d) structural impossibility
-//     (charter v1.5): (d) farms 4 under the adopted odds and 0 under the
-//     conservative odds, and the grid confirms it is structurally
-//     impossible there (required launch success > 100%); (f) farms under
-//     both layers with its worst farm's conservative P(negative) <= 0.90.
+//     (charter v1.5, counts charter v1.6): (d) farms 7 analytically (4 by
+//     simulation) under the adopted odds and 0 under the conservative odds,
+//     and the grid confirms it is structurally impossible there (required
+//     launch success > 100%); (f) farms 64 analytically (61 by simulation)
+//     under both layers with its worst farm's conservative P(negative) <=
+//     0.90. The analytic and simulation counts differ by Monte Carlo noise
+//     on rows at the ceiling and must never be asserted equal — the
+//     analytic count is the decision, the simulation count the cross-check.
 //     The grid's (3x, 0.85) cell is checked ONLY on the conservative count
 //     (0 = 0) — the adopted count (7 analytic vs 4 simulation) differs by
 //     Monte Carlo noise on rows at the ceiling and must never be asserted
@@ -749,18 +814,22 @@ check(
 const grid = radar.validation.gate_threshold_grid!;
 const cell385 = grid.rows.find((c) => c.multiple === 3 && c.ceiling === 0.85);
 check(
-  'gate (d) farms 0 under the conservative odds structurally and gate (f) farms under both layers within the risk ceiling',
-  gateTest.variant_d.farm_count === 4 &&
+  'gate (d) farms 0 under the conservative odds structurally and gate (f) farms under both layers within the risk ceiling (analytic counts, simulation within noise)',
+  gateTest.variant_d.farm_count === 7 &&
+    gateTest.variant_d.farm_count_sim === 4 &&
     gateTest.variant_d.farm_count_conservative === 0 &&
     grid.d_impossible_under_conservative === true &&
     grid.required_launch_success_d_conservative > 1 &&
     grid.breakeven_multiple_conservative > grid.breakeven_multiple_adopted &&
-    gateTest.variant_f.farm_count_conservative > 0 &&
+    gateTest.variant_f.farm_count === 64 &&
+    gateTest.variant_f.farm_count_sim === 61 &&
+    gateTest.variant_f.farm_count_conservative === 64 &&
+    gateTest.variant_f.farm_count_conservative_sim === 61 &&
     gateTest.variant_f.max_prob_negative_conservative !== null &&
     gateTest.variant_f.max_prob_negative_conservative <= 0.9 &&
     cell385 !== undefined &&
     cell385.farm_count_conservative === 0,
-  `(d) ${gateTest.variant_d.farm_count}/${gateTest.variant_d.farm_count_conservative} adopted/conservative, required success ${grid.required_launch_success_d_conservative}; (f) ${gateTest.variant_f.farm_count}/${gateTest.variant_f.farm_count_conservative}, worst P(neg) conservative ${gateTest.variant_f.max_prob_negative_conservative}; grid (3x, 0.85) conservative ${cell385 === undefined ? '?' : cell385.farm_count_conservative} (adopted ${cell385 === undefined ? '?' : cell385.farm_count_adopted} analytic, not asserted equal to sim)`,
+  `(d) analytic ${gateTest.variant_d.farm_count}/${gateTest.variant_d.farm_count_conservative} (sim ${gateTest.variant_d.farm_count_sim}/${gateTest.variant_d.farm_count_conservative_sim}), required success ${grid.required_launch_success_d_conservative}; (f) analytic ${gateTest.variant_f.farm_count}/${gateTest.variant_f.farm_count_conservative} (sim ${gateTest.variant_f.farm_count_sim}/${gateTest.variant_f.farm_count_conservative_sim}), worst P(neg) conservative ${gateTest.variant_f.max_prob_negative_conservative}; grid (3x, 0.85) conservative ${cell385 === undefined ? '?' : cell385.farm_count_conservative} (adopted ${cell385 === undefined ? '?' : cell385.farm_count_adopted} analytic, not asserted equal to sim)`,
 );
 
 // 40. Two-layer adoption consistency (charter v1.5): the adopted policy is
@@ -790,11 +859,15 @@ check(
   `eligible: ${variantLetters.filter((v) => v.variant.eligible).map((v) => v.letter).join(', ') || 'none'}; adopted (${gateTest.adopted}) worst P(neg) conservative ${adoptedEntry.variant.max_prob_negative_conservative}`,
 );
 
-// 41. Verdict stability (charter v1.5): per-row verdict counts sum to the
-//     70 refits, the agreeing count equals the main verdict's count, rank
-//     ranges are ordered and contain the production rank, the total moves
-//     reconcile with the most-frequent-moves table, and the flipped-row
-//     count matches the aggregate.
+// 41. Verdict stability (charter v1.5, demotions charter v1.6): per-row verdict
+//     counts sum to the 70 refits, the agreeing count equals the main
+//     verdict's count, rank ranges are ordered and contain the production
+//     rank, and the moves reconcile with the most-frequent-moves table on
+//     the LOPO basis (the verdict the refits were compared against —
+//     'farm' for a stability-demoted row, the main verdict otherwise).
+//     The % of (row, refit) pairs on the main verdict is recomputed from
+//     the rows, and the stability threshold is 35/70 with the demotion
+//     count reconciling against the board's farm_demoted_reason flags.
 const vs = radar.validation.verdict_stability!;
 const vsBad = vs.rows.filter((r) => {
   const countsSum = r.counts.farm + r.counts.marginal + r.counts.skip;
@@ -806,16 +879,35 @@ const vsBad = vs.rows.filter((r) => {
   );
 });
 const rankRangeBad = board.filter((r) => r.rank_range === null || r.rank < r.rank_range[0] || r.rank > r.rank_range[2]);
-const movesSum = vs.rows.reduce((a, r) => a + (vs.n_refits - r.n_agreeing_refits), 0);
+const boardBySlug = new Map(board.map((r) => [r.slug, r]));
+const movesSumLopoBasis = vs.rows.reduce((a, r) => {
+  const lopoVerdict = boardBySlug.get(r.slug)?.model.farm_demoted_reason === 'unstable' ? 'farm' : r.main_verdict;
+  return a + (vs.n_refits - r.counts[lopoVerdict]);
+}, 0);
 const movesTableSum = vs.most_frequent_moves.reduce((a, m) => a + m.count, 0);
+const pctRecomputed = vs.rows.reduce((a, r) => a + r.n_agreeing_refits, 0) / Math.max(1, vs.rows.length * vs.n_refits);
+const unstableDemotedBoard = board.filter((r) => r.model.farm_demoted_reason === 'unstable');
 check(
-  'verdict-stability counts sum to 70 per row, rank ranges contain the production rank, and moves reconcile',
+  'verdict-stability counts sum to 70 per row, rank ranges contain the production rank, moves reconcile on the LOPO basis, and the stability threshold is 35/70',
   vs.n_refits === 70 &&
     vsBad.length === 0 &&
     rankRangeBad.length === 0 &&
-    movesSum === movesTableSum &&
-    vs.rows.filter((r) => r.n_agreeing_refits < vs.n_refits).length === vs.unique_rows_ever_flipped,
-  `${vs.unique_rows_ever_flipped} rows ever flipped, ${movesSum} total moves, ${Math.round(vs.pct_pairs_on_main_verdict * 10000) / 100}% of (row, refit) pairs on the main verdict`,
+    movesSumLopoBasis === movesTableSum &&
+    Math.abs(vs.pct_pairs_on_main_verdict - pctRecomputed) < 1e-4 &&
+    vs.rows.filter((r) => r.n_agreeing_refits < vs.n_refits).length === vs.unique_rows_ever_flipped &&
+    vs.stability_threshold === 35 &&
+    vs.n_stability_demoted === unstableDemotedBoard.length &&
+    unstableDemotedBoard.every((r) => {
+      const s = vs.rows.find((x) => x.slug === r.slug)!;
+      return s.counts.farm < 35 && r.verdict === 'marginal';
+    }) &&
+    board
+      .filter((r) => r.verdict === 'farm')
+      .every((r) => {
+        const s = vs.rows.find((x) => x.slug === r.slug)!;
+        return s.counts.farm >= 35;
+      }),
+  `${vs.unique_rows_ever_flipped} rows ever flipped, ${movesSumLopoBasis} total moves (LOPO basis), ${Math.round(vs.pct_pairs_on_main_verdict * 10000) / 100}% of (row, refit) pairs on the main verdict, ${vs.n_stability_demoted} farms demoted by the 35/70 stability guard`,
 );
 
 // 42. Final evaluation table reconciliation (charter v1.5): the pooled
@@ -839,7 +931,7 @@ check(
   `pooled median abs err ${fe.pooled.median_abs_log_err} dex, Spearman ${fe.pooled.spearman}, Kendall ${fe.pooled.kendall}, WF ${fe.wf_median_abs_log_err_dex} dex (${fe.wf_typical_error_x}x), R² ${fe.r2_in_sample} in-sample`,
 );
 
-// 43. Reproducibility package (charter v1.5): the recorded snapshot hash is
+// 43. Reproducibility package (charter v1.6): the recorded snapshot hash is
 //     the hash of the input file passed to this test (computed at build time
 //     from the file, never typed by hand), the charter/model versions match
 //     this build, and the locked constants record the adopted gate and the
@@ -849,12 +941,262 @@ check(
   'reproducibility package records the input file hash, charter/model versions, adopted gate and fitted coefficients',
   repro !== null &&
     repro.snapshot_sha256 === snapshotSha256 &&
-    repro.charter_version === 'v1.5' &&
-    repro.model_version === 'radar-12' &&
+    repro.charter_version === 'v1.6' &&
+    repro.model_version === 'radar-13' &&
     repro.constants['gate_adopted'] === gateTest.adopted &&
     Math.abs(Number(repro.constants['intercept']) - fitted.beta[0]!) < 1e-9 &&
     Math.abs(Number(repro.constants['coef_log_tvl']) - fitted.beta[1]!) < 1e-9,
   `sha256 ${String(repro.snapshot_sha256).slice(0, 12)}…, charter ${repro.charter_version}, model ${repro.model_version}, gate ${String(repro.constants['gate_adopted'])}`,
+);
+
+// 44. Two verdicts (charter v1.6): every row's adopted and conservative
+//     verdicts recompute from the analytic statistics under the two odds
+//     layers; the production verdict IS the conservative verdict except
+//     for the recorded demotions; conditional_farm is true exactly when
+//     the adopted verdict is farm and the conservative verdict is not.
+const adoptedOdds = fitted.seasoning.base_rate;
+const twoVerdictBad = board.filter((r) => {
+  const sigma = fitted.bandHalfwidth > 0 ? (fitted.bandHalfwidth * r.model.ood.band_multiplier) / 0.6745 : 0.01;
+  const vA = analyticLayerVerdict(r.model.predicted_log_value, sigma, r.plan_cost_usd, adoptedOdds, r.model.break_even_odds, gateTest.adopted, fitted.valueCapUsd, r.model.ood, MODEL);
+  const vC = analyticLayerVerdict(r.model.predicted_log_value, sigma, r.plan_cost_usd, conservativeOdds, r.model.break_even_odds, gateTest.adopted, fitted.valueCapUsd, r.model.ood, MODEL);
+  const expectedProduction = r.model.farm_demoted_reason !== null ? 'marginal' : vC;
+  return (
+    r.model.verdict_adopted !== vA ||
+    r.model.verdict_conservative !== vC ||
+    r.verdict !== expectedProduction ||
+    r.model.conditional_farm !== (vA === 'farm' && vC !== 'farm')
+  );
+});
+check(
+  'two verdicts recompute from the analytic statistics and the production verdict is the conservative verdict except for the recorded demotions',
+  twoVerdictBad.length === 0,
+  twoVerdictBad.length === 0
+    ? `${board.length} rows checked, ${board.filter((r) => r.model.conditional_farm).length} conditional farms, ${board.filter((r) => r.model.farm_demoted_reason !== null).length} guard-demoted`
+    : `violations: ${twoVerdictBad.map((r) => r.slug).join(', ')}`,
+);
+
+// 45. BORDERLINE (charter v1.6): the borderline flag and reason recompute
+//     from the prespecified rule (analytic P(negative) within ±0.01 of a
+//     layer ceiling, or analytic/sim gate disagreement); every borderline
+//     row is MARGINAL with a reason; no borderline row is FARM or SKIP;
+//     tau-labs and t3tris-finance — the two rows ChatGPT named — are
+//     borderline marginals under the rule, not hand-edited.
+const borderlineBad = board.filter((r) => {
+  const sigma = fitted.bandHalfwidth > 0 ? (fitted.bandHalfwidth * r.model.ood.band_multiplier) / 0.6745 : 0.01;
+  const sA = analyticGateStats(r.model.predicted_log_value, sigma, r.plan_cost_usd, adoptedOdds, fitted.valueCapUsd, MODEL);
+  const sC = analyticGateStats(r.model.predicted_log_value, sigma, r.plan_cost_usd, conservativeOdds, fitted.valueCapUsd, MODEL);
+  const gAA = gatePasses(gateTest.adopted, sA, adoptedOdds);
+  const gAC = gatePasses(gateTest.adopted, sC, conservativeOdds);
+  const gSA = gatePasses(gateTest.adopted, { evMean: r.model.expected_value_usd, evP25: r.model.ev_p25_usd, evP50: r.model.ev_p50_usd, evP75: r.model.ev_p75_usd, conditionalMeanEv: r.model.ev_conditional_mean_usd, planCost: r.plan_cost_usd, probNegative: r.model.prob_negative_return }, adoptedOdds);
+  const gSC = gatePasses(gateTest.adopted, { evMean: r.model.ev_mean_conservative_usd, evP25: r.model.ev_p25_conservative_usd, evP50: r.model.ev_p50_conservative_usd, evP75: r.model.ev_p75_conservative_usd, conditionalMeanEv: r.model.ev_conditional_mean_usd, planCost: r.plan_cost_usd, probNegative: r.model.prob_negative_return_conservative }, conservativeOdds);
+  const bl = borderlineInfo(sA.probNegative, sC.probNegative, gAA, gAC, gSA, gSC, gateTest.adopted, adoptedOdds, conservativeOdds);
+  return (
+    r.model.borderline !== bl.borderline ||
+    r.model.borderline_reason !== bl.reason ||
+    (bl.borderline && (r.verdict !== 'marginal' || r.model.borderline_reason === null))
+  );
+});
+const tauLabs = board.find((r) => r.slug === 'tau-labs')!;
+const t3tris = board.find((r) => r.slug === 't3tris-finance')!;
+check(
+  'BORDERLINE recomputes from the prespecified rule, every borderline row is MARGINAL with a reason, and tau-labs / t3tris-finance are borderline marginals',
+  borderlineBad.length === 0 &&
+    board.filter((r) => r.model.borderline).every((r) => r.verdict === 'marginal') &&
+    tauLabs.model.borderline === true &&
+    tauLabs.verdict === 'marginal' &&
+    t3tris.model.borderline === true &&
+    t3tris.verdict === 'marginal',
+  `${board.filter((r) => r.model.borderline).length} borderline rows, all marginal; tau-labs ${tauLabs.model.borderline_reason}; t3tris ${t3tris.model.borderline_reason}`,
+);
+
+// 46. Gate-test analytic/sim consistency (charter v1.6): the analytic farm
+//     counts recompute from the board rows' predicted log, sigma and plan
+//     cost under both layers; the simulation counts sit within Monte Carlo
+//     noise of the analytic counts (≤ 6 per variant per layer — the observed
+//     max difference is 4); the analytic counts decide, the simulation is
+//     the cross-check.
+const gateAnalyticBad: string[] = [];
+for (const v of ['a', 'b', 'c', 'd', 'e', 'f'] as const) {
+  const variant = gateTest[`variant_${v}`];
+  let nA = 0;
+  let nC = 0;
+  for (const r of board) {
+    const sigma = fitted.bandHalfwidth > 0 ? (fitted.bandHalfwidth * r.model.ood.band_multiplier) / 0.6745 : 0.01;
+    if (gatePasses(v, analyticGateStats(r.model.predicted_log_value, sigma, r.plan_cost_usd, adoptedOdds, fitted.valueCapUsd, MODEL), adoptedOdds)) nA++;
+    if (gatePasses(v, analyticGateStats(r.model.predicted_log_value, sigma, r.plan_cost_usd, conservativeOdds, fitted.valueCapUsd, MODEL), conservativeOdds)) nC++;
+  }
+  if (variant.farm_count !== nA || variant.farm_count_conservative !== nC) gateAnalyticBad.push(`${v}: table ${variant.farm_count}/${variant.farm_count_conservative} vs recomputed ${nA}/${nC}`);
+  if (Math.abs(variant.farm_count - variant.farm_count_sim) > 6 || Math.abs(variant.farm_count_conservative - variant.farm_count_conservative_sim) > 6) {
+    gateAnalyticBad.push(`${v}: sim ${variant.farm_count_sim}/${variant.farm_count_conservative_sim} more than 6 from analytic ${variant.farm_count}/${variant.farm_count_conservative}`);
+  }
+}
+check(
+  'gate-test analytic farm counts recompute from the board rows and the simulation counts sit within Monte Carlo noise (≤ 6)',
+  gateAnalyticBad.length === 0,
+  gateAnalyticBad.length === 0 ? `adopted (f) analytic ${gateTest.variant_f.farm_count} vs sim ${gateTest.variant_f.farm_count_sim}` : gateAnalyticBad.join('; '),
+);
+
+// 47. Ranking tournament (charter v1.6): the OLS row reproduces the nested
+//     pooled ranking numbers exactly (the fit is unchanged); per-fold test
+//     counts sum to 28; the OLS per-fold Spearman values match the nested
+//     ranking rows; the adoption rule is applied correctly from the rows.
+const tourney = radar.validation.ranking_tournament!;
+const olsTourney = tourney.rows.find((r) => r.model === 'ols')!;
+const tourneyBar = (r: (typeof tourney.rows)[number]): boolean =>
+  r.pooled_spearman >= olsTourney.pooled_spearman + 0.1 && r.pooled_kendall >= olsTourney.pooled_kendall + 0.05 && r.pooled_top10_overlap >= olsTourney.pooled_top10_overlap;
+const tourneyPassing = tourney.rows.filter((r) => r.model !== 'ols' && tourneyBar(r));
+const tourneyAdoptedExpected =
+  tourneyPassing.length > 0 ? [...tourneyPassing].sort((a, b) => b.pooled_spearman - a.pooled_spearman || b.pooled_kendall - a.pooled_kendall)[0]!.model : 'ols';
+check(
+  'ranking tournament OLS row reproduces the nested pooled ranking numbers and the adoption bar is applied correctly',
+  Math.abs(olsTourney.pooled_spearman - rs.nested_pooled_spearman) < 1e-9 &&
+    Math.abs(olsTourney.pooled_kendall - rs.nested_pooled_kendall) < 1e-9 &&
+    olsTourney.pooled_top10_overlap === rs.nested_pooled_top10_overlap &&
+    olsTourney.pooled_top20_overlap === rs.nested_pooled_top20_overlap &&
+    olsTourney.per_fold.reduce((a, f) => a + f.n_test, 0) === 28 &&
+    olsTourney.per_fold.every((f) => {
+      const nested = rs.nested.find((n) => n.train_pct === f.train_pct)!;
+      return Math.abs(f.spearman - nested.spearman_predicted_vs_actual) < 1e-9 && Math.abs(f.kendall - nested.kendall_predicted_vs_actual) < 1e-9;
+    }) &&
+    tourney.rows.every((r) => Math.abs(r.pooled_top10_precision - r.pooled_top10_overlap / 10) < 1e-9 && Math.abs(r.pooled_top20_precision - r.pooled_top20_overlap / 20) < 1e-9) &&
+    tourney.adopted === tourneyAdoptedExpected &&
+    tourney.benchmark === 'ols',
+  `OLS pooled Spearman ${olsTourney.pooled_spearman} (nested ${rs.nested_pooled_spearman}), Kendall ${olsTourney.pooled_kendall}; challengers TVL-only ${tourney.rows.find((r) => r.model === 'tvl-only')!.pooled_spearman}, median-by-category ${tourney.rows.find((r) => r.model === 'median-by-category')!.pooled_spearman}, global-median ${tourney.rows.find((r) => r.model === 'global-median')!.pooled_spearman}; adopted ${tourney.adopted}`,
+);
+
+// 48. Cohort ranking (charter v1.6): the listing-date terciles sum to the 28
+//     pooled selection rows; the listing-year cohorts sum to the 70 dated
+//     comps; the fold-80 cohorts match the negative-fold diagnosis rows'
+//     cohorts; the 2025–2026 cohort's pooled Spearman drops when the
+//     fold-80 rows are included (the fold's failure is concentrated there).
+const cohortRanking = radar.validation.cohort_ranking!;
+const cohortOfTest = (listedAt: string): string => {
+  const y = Number(listedAt.slice(0, 4));
+  if (y <= 2022) return '2021–2022';
+  if (y === 2023) return '2023';
+  if (y === 2024) return '2024';
+  return '2025–2026';
+};
+const diagCohorts = [...new Set((rs.negative_fold_diagnosis?.rows ?? []).map((r) => cohortOfTest(snapshot.protocols.find((pp) => pp.slug === r.slug)!.listed_at!)))].sort();
+const cohort2025With = cohortRanking.pooled_spearman_by_cohort_with_fold80.find((r) => r.group === '2025–2026')!;
+const cohort2025Excl = cohortRanking.pooled_spearman_by_cohort_excl_fold80.find((r) => r.group === '2025–2026')!;
+check(
+  'cohort ranking terciles sum to 28, year cohorts sum to 70, fold-80 cohorts match the diagnosis, and the 2025–2026 Spearman drops with the fold',
+  cohortRanking.by_listing_tercile.reduce((a, r) => a + r.n, 0) === 28 &&
+    cohortRanking.by_listing_year_cohort.reduce((a, r) => a + r.n, 0) === 70 &&
+    JSON.stringify(cohortRanking.fold80_cohorts) === JSON.stringify(diagCohorts) &&
+    cohortRanking.pooled_spearman_by_cohort_with_fold80.reduce((a, r) => a + r.n, 0) === 28 &&
+    cohortRanking.pooled_spearman_by_cohort_excl_fold80.reduce((a, r) => a + r.n, 0) === 21 &&
+    cohort2025With.spearman !== null &&
+    cohort2025Excl.spearman !== null &&
+    cohort2025With.spearman < cohort2025Excl.spearman,
+  `terciles ${cohortRanking.by_listing_tercile.map((r) => `${r.group.split(' ')[0]}:${r.spearman}`).join(', ')}; fold-80 cohorts ${cohortRanking.fold80_cohorts.join(', ')}; 2025–2026 pooled Spearman ${cohort2025With.spearman} with fold vs ${cohort2025Excl.spearman} without`,
+);
+
+// 49. Valuation-to-decision table (charter v1.6): 198 rows in board order,
+//     and every number reconciles with board.json / data.js — implied
+//     value, predicted log, both verdicts, borderline flag, stability
+//     proportions, analytic P(negative) and the Wilson interval.
+const valTable = radar.valuation_decision_table!;
+const valBad = valTable.filter((t, i) => {
+  const r = board[i]!;
+  return (
+    t.slug !== r.slug ||
+    t.implied_value_usd !== r.implied_value_usd ||
+    Math.abs(t.predicted_log_value - r.model.predicted_log_value) > 1e-9 ||
+    t.verdict !== r.verdict ||
+    t.verdict_adopted !== r.model.verdict_adopted ||
+    t.verdict_conservative !== r.model.verdict_conservative ||
+    t.conditional_farm !== r.model.conditional_farm ||
+    t.borderline !== r.model.borderline ||
+    t.borderline_reason !== r.model.borderline_reason ||
+    t.stability_farm !== r.model.stability!.farm ||
+    t.stability_marginal !== r.model.stability!.marginal ||
+    t.stability_skip !== r.model.stability!.skip ||
+    Math.abs(t.prob_negative_analytic_adopted - r.model.prob_negative_analytic) > 1e-9 ||
+    t.prob_negative_sim_ci_adopted[0] !== r.model.prob_negative_sim_ci_adopted[0] ||
+    t.prob_negative_sim_ci_adopted[1] !== r.model.prob_negative_sim_ci_adopted[1]
+  );
+});
+check(
+  'valuation-to-decision table has 198 rows in board order reconciling with the board on every field',
+  valTable.length === 198 && valTable.length === board.length && valBad.length === 0,
+  valBad.length === 0 ? `${valTable.length} rows, board order, all fields reconcile` : `violations: ${valBad.map((t) => t.slug).join(', ')}`,
+);
+
+// 50. Gate (f) audit (charter v1.6): the breakeven multiples recompute to
+//     5.09× adopted / 6.33× conservative from the layer odds (1/p_L − 1);
+//     the aggregates reconcile with the rows; a row's conditional multiple
+//     above the breakeven multiple is exactly a positive expected net
+//     return at that layer.
+const gateFAudit = radar.validation.gate_f_audit!;
+const beA = 1 / adoptedOdds - 1;
+const beC = 1 / conservativeOdds - 1;
+const gateFBad = gateFAudit.rows.filter((r) => {
+  const aboveA = r.conditional_multiple > gateFAudit.breakeven_multiple_adopted;
+  const aboveC = r.conditional_multiple > gateFAudit.breakeven_multiple_conservative;
+  // The multiple is round4 and the EV is rounded to whole dollars, so a row
+  // within $1 of zero may flip sign between the two; outside $1 they must agree.
+  return (
+    Math.abs(r.breakeven_multiple_adopted - gateFAudit.breakeven_multiple_adopted) > 1e-9 ||
+    Math.abs(r.breakeven_multiple_conservative - gateFAudit.breakeven_multiple_conservative) > 1e-9 ||
+    (aboveA && r.expected_net_return_adopted_usd < -1) ||
+    (!aboveA && r.expected_net_return_adopted_usd > 1) ||
+    (aboveC && r.expected_net_return_conservative_usd < -1) ||
+    (!aboveC && r.expected_net_return_conservative_usd > 1) ||
+    !(r.expected_net_return_param_usd[0] <= r.expected_net_return_param_usd[1])
+  );
+});
+check(
+  'gate (f) audit breakeven multiples recompute to 5.09×/6.33× and the aggregates reconcile with the rows',
+  Math.abs(gateFAudit.breakeven_multiple_adopted - 5.09) < 0.005 &&
+    Math.abs(gateFAudit.breakeven_multiple_conservative - 6.33) < 0.005 &&
+    Math.abs(gateFAudit.breakeven_multiple_adopted - beA) < 0.001 &&
+    Math.abs(gateFAudit.breakeven_multiple_conservative - beC) < 0.001 &&
+    gateFAudit.n_candidates === gateFAudit.rows.length &&
+    gateFAudit.n_positive_expected_return_adopted === gateFAudit.rows.filter((r) => r.expected_net_return_adopted_usd > 0).length &&
+    gateFAudit.n_positive_expected_return_conservative === gateFAudit.rows.filter((r) => r.expected_net_return_conservative_usd > 0).length &&
+    gateFAudit.n_below_breakeven_multiple_adopted === gateFAudit.rows.filter((r) => r.conditional_multiple < gateFAudit.breakeven_multiple_adopted).length &&
+    gateFAudit.n_below_breakeven_multiple_conservative === gateFAudit.rows.filter((r) => r.conditional_multiple < gateFAudit.breakeven_multiple_conservative).length &&
+    gateFBad.length === 0,
+  `${gateFAudit.n_candidates} (f) candidates, ${gateFAudit.n_positive_expected_return_adopted} positive expected net return adopted / ${gateFAudit.n_positive_expected_return_conservative} conservative, ${gateFAudit.n_below_breakeven_multiple_adopted} below the adopted breakeven / ${gateFAudit.n_below_breakeven_multiple_conservative} below the conservative breakeven`,
+);
+
+// 51. Gate (f) audit rows are exactly the analytic-(f)-farm candidates
+//     under the adopted odds: the audit set equals the gate test's (f)
+//     farm set, recomputed from the board rows.
+const auditSlugs = new Set(gateFAudit.rows.map((r) => r.slug));
+const analyticFCandidates = board.filter((r) => {
+  const sigma = fitted.bandHalfwidth > 0 ? (fitted.bandHalfwidth * r.model.ood.band_multiplier) / 0.6745 : 0.01;
+  return gatePasses('f', analyticGateStats(r.model.predicted_log_value, sigma, r.plan_cost_usd, adoptedOdds, fitted.valueCapUsd, MODEL), adoptedOdds);
+});
+check(
+  'gate (f) audit lists exactly the analytic-(f)-farm candidates under the adopted odds',
+  auditSlugs.size === analyticFCandidates.length &&
+    analyticFCandidates.every((r) => auditSlugs.has(r.slug)) &&
+    gateFAudit.n_candidates === gateTest.variant_f.farm_count,
+  `${gateFAudit.n_candidates} audit rows = gate (f) analytic farm count ${gateTest.variant_f.farm_count}`,
+);
+
+// 52. Board stability fields reconcile with the verdict-stability rows:
+//     every board row's stability proportions equal its stability row's
+//     counts, and stable_farm is true exactly for a production farm with
+//     ≥ 35/70 refits agreeing.
+const stabBad = board.filter((r) => {
+  const s = vs.rows.find((x) => x.slug === r.slug)!;
+  const m = r.model.stability!;
+  return (
+    m.farm !== s.counts.farm ||
+    m.marginal !== s.counts.marginal ||
+    m.skip !== s.counts.skip ||
+    m.agreeing_refits !== s.n_agreeing_refits ||
+    m.stable_farm !== (r.verdict === 'farm' ? s.counts.farm >= 35 : null)
+  );
+});
+check(
+  'board stability fields reconcile with the verdict-stability rows and stable_farm follows the 35/70 rule',
+  stabBad.length === 0,
+  stabBad.length === 0 ? `${board.length} rows checked, ${board.filter((r) => r.verdict === 'farm').length} farms all stable (≥ 35/70)` : `violations: ${stabBad.map((r) => r.slug).join(', ')}`,
 );
 
 function fmtCap(n: number): string {

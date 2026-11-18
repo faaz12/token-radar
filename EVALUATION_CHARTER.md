@@ -1,18 +1,19 @@
-# Evaluation Charter v1.5 — Token Radar (radar-12)
+# Evaluation Charter v1.6 — Token Radar (radar-13)
 
-Locked **before** fitting radar-12. Any change after results creates a new
-charter version and labels the prior results **exploratory**. Radar-11 numbers
-were computed under charter v1.4; the evaluation procedure changed in v1.5
-(negative-fold diagnosis with Kendall rank correlation and pooled top-k
-overlap, cluster bootstrap with 2000 refits and multimodality/sign-flip
-checks, parameter uncertainty folded into the farming simulation, economic
-audit of gate (d) with a threshold-sensitivity grid and an odds-consistent
-candidate (f) under a two-layer adoption rule, per-protocol verdict
-stability with rank ranges, a final evaluation table, and a
-reproducibility package), so radar-11 numbers are **exploratory under
-v1.5** and must not be quoted as v1.5 results. Radar-11 is frozen in
-`hidden_files/radar-11-freeze/` (board, data, dossier, metrics,
-CHARTER-v1.4.md, FREEZE.md, snapshot sha256
+Locked **before** fitting radar-13. Any change after results creates a new
+charter version and labels the prior results **exploratory**. Radar-12 numbers
+were computed under charter v1.5; the evaluation procedure changed in v1.6
+(analytic-first decisions with Monte Carlo confidence intervals and
+BORDERLINE/REVIEW labels, gate (f) re-audit with expected net return per
+row and the "risk-screening policy" name, two verdicts per protocol
+(adopted + conservative) with CONDITIONAL FARM, per-row stability scores
+with a prespecified 50% threshold, a ranking tournament of simple models
+against OLS on ranking metrics, per-cohort and per-regime ranking
+evaluation for the fold-80 failure, and one valuation-to-decision table
+for all 198 rows), so radar-12 numbers are **exploratory under
+v1.6** and must not be quoted as v1.6 results. Radar-12 is frozen in
+`hidden_files/radar-12-freeze/` (board, data, dossier, metrics,
+CHARTER-v1.5.md, FREEZE.md, snapshot sha256
 42a71213519479f3a180cc5010cbbf6bd18a2447fa0ad29e4c5122b6c9184393).
 
 ## Why v1.3 exists — the defect it fixes
@@ -100,6 +101,42 @@ diagnosis before any model change — and audits gate (d) economically,
 testing an odds-consistent candidate only under a prespecified rule that
 cannot be chosen after seeing farm counts.
 
+## Why v1.6 exists — the defect it fixes
+
+Under v1.5 the production verdict is decided by ONE 20,000-draw Monte
+Carlo point estimate, so rows sitting at the gate ceiling flip on
+simulation noise: tau-labs has an analytic P(negative) of 0.8989 against
+the (f) ceiling of 0.8977 — it should have failed, but it farmed because
+the simulation drew 0.8976; t3tris-finance analytically passes (0.8765
+vs 0.8768) but its simulation flag failed at 0.8771, 0.0003 over the
+ceiling. The board's FARM count carries ±3 rows of Monte Carlo noise
+(analytic (f) 64 vs simulation 61). Gate (f) is presented as a farm
+gate while its 3× conditional payoff sits BELOW the breakeven multiples
+(5.09× adopted / 6.33× conservative) — it is a risk screen, not a
+profit proof, and no row's expected net return is audited against it.
+Only one verdict is shown per protocol although the adopted and
+conservative layers disagree (gate (d) candidates pass 44–66% under
+adopted odds, 0% under conservative). The LOPO stability counts exist
+but no stability threshold is set, so tau-labs (production FARM,
+MARGINAL in 69 of 70 refits) looks identical to a FARM 69/70 on the
+board. The ranking evaluation never tests whether a simpler model
+(TVL-only, median-by-category) beats OLS on RANKING. The fold-80
+inversion (Spearman −0.2857) is diagnosed but cross-time generalization
+is not tested per cohort or regime. And no single table links each
+protocol's valuation estimate, interval, launch-probability source and
+conditional payoff to its decision. Two independent reviews of radar-12
+(Q10) split again: Gemini said YES to submitting now (no changes);
+ChatGPT said NO (the seven blockers above, in order: uncertainty-aware
+decisions; gate (f) re-audit with expected net return; adopted vs
+conservative verdicts split; per-row stability scores; ranking-model
+tournament; fold-80 cross-time generalization; one valuation-to-decision
+table). v1.6 does ChatGPT's blockers in that order — decisions that
+reproduce when the simulation is repeated, parameters are bootstrapped,
+and assumptions change — and the target is NOT "more farms" or "a higher
+leaderboard score". The fit is unchanged unless a prespecified ranking
+improvement is demonstrated; rain and obol stay in the fit; no threshold
+is moved after seeing a farm count.
+
 ## Question, target, grain, decision time
 
 - **Question:** which pre-token protocols are worth farming for a token launch,
@@ -173,7 +210,9 @@ cannot be chosen after seeing farm counts.
 - **Baselines:** the old OLS model on the same features and splits; a ridge
   baseline (fixed λ = 1.0 on the standardized log-TVL slope, see below — a
   mild shrinkage, not a tuned model); the base-rate launch rate for the
-  seasoning curve.
+  seasoning curve; and the v1.6 ranking-tournament challengers
+  (TVL-only, median-by-category, global-median) on the same nested folds
+  and the same ranking metrics as OLS.
 - **Success rule:** nested pooled < 0.602 dex (4x) AND WF 70/30 < 0.602 dex,
   on dated comps.
 - **Headline:** dated-only numbers are the headline. Undated is a reference
@@ -958,6 +997,201 @@ determinism (two builds, `diff -r` clean) and the frozen benchmark
 whose numbers cannot be reproduced from the sealed snapshot and the
 recorded seeds fails the charter.
 
+## Uncertainty-aware decisions (v1.6) — analytic first, simulation as cross-check, BORDERLINE is a verdict
+
+The production verdict is decided by the ANALYTIC gate statistics
+(closed-form capped-lognormal: `analyticGateStats` — the exact mean EV,
+conditional mean EV, net-return quantiles and P(negative) of the same
+distribution the Monte Carlo draws from), NOT by the 20,000-draw
+simulation. The simulation is a cross-check: its P(negative) must agree
+with the analytic value within its Monte Carlo confidence interval, and
+its farm counts are reported next to the analytic counts, never instead
+of them. The gate-policy test is computed on the analytic statistics
+under both odds layers; the simulation gate test is reported alongside
+as the cross-check. The analytic and simulated statistics describe the
+same distribution — a disagreement is Monte Carlo noise, and the build
+treats it as noise, not as a model difference.
+
+- **Monte Carlo confidence intervals.** Every simulated proportion
+  (P(negative) under each odds layer, each gate pass fraction) carries
+  its 95% Wilson score interval from its draw count N (20,000 for the
+  production simulation, 5,000 for the tournament and param-aware
+  simulations). At N = 20,000 the standard error of P(negative) near
+  0.88 is ≈ 0.0023. A simulated P(negative) whose Wilson interval does
+  not contain the analytic value fails the build.
+- **BORDERLINE (prespecified before results).** A row is BORDERLINE
+  when EITHER (a) its analytic P(negative) under the adopted OR the
+  conservative odds layer is within ±0.01 of that layer's gate ceiling
+  (for gate (f): 1 − 0.75 × p_L, i.e. 0.8768 adopted / 0.8977
+  conservative), OR (b) its analytic gate verdict and its simulation
+  gate verdict disagree under either odds layer (one passes, the other
+  fails). The ±0.01 width is fixed before results: ≈ 4 Monte Carlo
+  standard errors, so a row inside it cannot be called a pass or a fail
+  with confidence. The marginal/skip boundary needs no borderline band:
+  it is the sign of the analytic mean EV, which is deterministic given
+  the fit (no simulation noise); its parameter uncertainty is reported
+  separately via the bootstrap P10/P90 of the mean EV and the stability
+  proportions below.
+- **A BORDERLINE row is NEVER FARM and NEVER SKIP.** It is MARGINAL
+  with the label REVIEW, whatever its point estimate says — the middle
+  verdict is the uncertainty verdict. The board shows the borderline
+  reason (which leg, which layer, and the distance to the ceiling) and
+  the analytic and simulated P(negative) side by side, so the reader
+  can see the row is a coin flip, not a call.
+- **The two named rows are handled by the rule, not by hand.** Under
+  v1.5 tau-labs farmed on simulation noise (analytic 0.8989 vs ceiling
+  0.8977, 0.0012 over) and t3tris-finance's simulation flag failed while
+  it analytically passes (0.8765 vs 0.8768, 0.0003 under). Under v1.6
+  both are BORDERLINE by clause (a) — and tau-labs additionally by
+  clause (b) — and both are MARGINAL + REVIEW. No row is hand-edited;
+  the rule decides.
+
+## Gate (f) re-audit with expected net return (v1.6) — a risk-screening policy, not a profit gate
+
+Gate (f) — conditional mean EV > 3× plan cost AND P(negative return)
+≤ 1 − 0.75 × p_L — is renamed everywhere (dashboard, README, charter)
+a **risk-screening policy**, never a profit gate, until expected net
+return and tail risk are proven adequate. The 3× conditional payoff is
+a screen for operational effort (a launch must pay at least 3× the plan
+cost to be worth the effort, fees and slippage), NOT breakeven: the
+breakeven multiples are **5.09×** at the adopted odds and **6.33×** at
+the conservative odds, so a (f) farm with a conditional multiple
+between 3× and 5.09× has a NEGATIVE expected net return. The audit
+makes that visible per row instead of hiding it behind the farm count:
+
+- For every protocol (all 198, in the valuation-to-decision table):
+  expected net return after plan cost under the adopted odds AND under
+  the conservative odds, the P10/P90 of the mean EV across the 2000
+  bootstrap refits (parameter uncertainty), the conditional payoff
+  (farmer share × mean value if it launches − plan cost) and its
+  multiple of the plan cost, and the tail risk (analytic P(negative)
+  under both layers, P10 net return).
+- The gate (f) audit table lists every analytic-(f)-farm candidate
+  under the adopted odds with those numbers, and reports the aggregates:
+  how many (f) farms have a positive expected net return under the
+  adopted odds, how many under the conservative odds, and how many have
+  a conditional multiple below the breakeven multiple at each layer.
+- The audit reports; it does not re-pick the gate. The farm rule stays
+  (f) plus the v1.6 BORDERLINE and stability guards — the charter is
+  never re-chosen after seeing which rows the audit embarrasses.
+
+## Two verdicts per protocol (v1.6) — adopted vs conservative, CONDITIONAL FARM
+
+Every board row carries TWO verdicts, computed from the same analytic
+statistics under the two odds layers:
+
+- `verdict_adopted` — the analytic gate under the adopted (base-rate)
+  launch odds, with the OOD farm block.
+- `verdict_conservative` — the analytic gate under the conservative
+  (2.5th-percentile) launch odds, with the OOD farm block.
+- The production `verdict` IS the conservative verdict, except for the
+  v1.6 guards: a would-be farm that is BORDERLINE or UNSTABLE (below)
+  is demoted to MARGINAL, and the demotion reason is recorded.
+- **CONDITIONAL FARM.** When `verdict_adopted` is farm and
+  `verdict_conservative` is not, the row is labeled CONDITIONAL FARM
+  (production verdict MARGINAL) — it farms only on the adopted odds,
+  not under the stress test, and the dashboard shows it as such instead
+  of an unqualified FARM. A row that passes both layers and survives
+  the guards is an unqualified FARM; anything else that says FARM is a
+  mislabel.
+- The decision trace of every row names both layers (which layer
+  passes, which fails, by how much) so the reader can reproduce the
+  call without re-running the model.
+
+## Stability score (v1.6) — proportions per row, threshold fixed before results
+
+The v1.5 LOPO verdict counts are promoted to a per-row stability
+score, shown on the dashboard for every row: the proportion of the 70
+LOPO refits producing FARM / MARGINAL / SKIP (e.g. FARM 69/70), the
+number of refits agreeing with the production verdict, and the most
+frequent alternative verdict. The refit verdicts are the analytic gate
+verdicts (same rule as production, without the BORDERLINE demotion —
+the proportions measure the gate's sensitivity to the training set,
+while BORDERLINE guards the production call).
+
+- **Stability threshold (prespecified before results): a production
+  FARM is STABLE iff at least 35 of 70 refits (50%) agree with FARM.**
+  Below 50% the farm is UNSTABLE and is demoted to MARGINAL with the
+  UNSTABLE label and the proportions shown. The threshold is fixed
+  here, before any v1.6 result exists, and is never moved to preserve
+  a farm count.
+- A production FARM with 0/70 agreeing refits (tau-labs under v1.5)
+  must not look the same as a FARM 69/70 on the board: the dashboard
+  shows the proportions next to every verdict, and the state file
+  reports the distribution of stability scores across the farm rows.
+- The aggregates are reported as before (unique rows ever flipped,
+  moves per protocol, % of (row, refit) pairs on the main verdict,
+  most frequent cross-category moves), plus the count of farms demoted
+  by the stability guard.
+
+## Ranking tournament (v1.6) — simple models vs OLS on RANKING, not on error
+
+The ranking evaluation is completed by testing whether a simpler model
+beats OLS on the ORDERING, not on the level error. The challengers are
+evaluated on the SAME nested walk-forward folds as the production fit
+(50/60/70/80 selection folds + the 90% untouched fold) with the SAME
+ranking metrics (Spearman, Kendall, pooled top-10/top-20
+overlap/precision on the pooled selection rows):
+
+- **OLS** (production fit, benchmark) — the fitted log-log regression.
+- **TVL-only** — predicted log value = log10(TVL + floor): the ranking
+  by TVL alone, no fitted coefficients.
+- **Median-by-category** — predicted log value = the median log market
+  cap of the fold's training comps in the row's category (global median
+  when the category has fewer than 3 training comps). Category medians
+  are computed on the fold's training rows only — never on the test
+  rows, never on the full set.
+- **Global-median** — predicted log value = the median log market cap
+  of all the fold's training comps (a constant: Spearman 0 by
+  construction, the null control that proves the tournament can see a
+  model that ranks nothing).
+- **Adoption rule (prespecified):** a challenger replaces OLS only if
+  it beats OLS on pooled Spearman by ≥ 0.10 AND on pooled Kendall by
+  ≥ 0.05 AND on pooled top-10 overlap by ≥ 0 (at least ties), on the
+  selection folds (50–80). Otherwise OLS stays. The tournament reports;
+  it does not select by farm count, and a challenger that wins on
+  level error but loses on ranking does not win.
+
+## Fold 80 / cross-time generalization (v1.6) — per cohort and per regime
+
+The fold-80 inversion is tested for cohort and regime dependence
+instead of being left as one diagnosed fold:
+
+- **Per-cohort ranking:** the pooled selection rows (n = 28) split by
+  listing-date tercile (oldest / middle / newest) — Spearman, Kendall
+  and median absolute error per tercile, with n reported. Terciles with
+  n < 10 are descriptive, not validation claims.
+- **Per-regime ranking:** listing-year cohorts (2021–2022, 2023, 2024,
+  2025–2026) on the 70 dated comps — fitted-vs-actual Spearman and
+  Kendall per cohort (in-sample, descriptive) plus the pooled
+  out-of-sample selection rows per cohort where n allows.
+- **Fold-80 composition:** which cohorts and regimes its 7 test rows
+  belong to, and whether the inversion is cohort-specific — the pooled
+  Spearman excluding fold 80, reported per cohort, against the pooled
+  Spearman with it. If the inversion is confined to one cohort, the
+  charter says so; if every cohort ranks weakly, the charter says that
+  instead. The fold is kept and reported, never deleted.
+
+## Valuation-to-decision table (v1.6) — one table, every protocol, valuation to verdict
+
+One structured table links the valuation to the decision for all 198
+protocols, in board order, from the same build (no hand-typed numbers):
+slug and name; valuation estimate (implied value, predicted log value,
+value if it launches); the param-aware interval [P25, P75] and the
+outcome-only band; the launch-probability source (global cohort base
+rate 16.43%, cohort, 12-month horizon, supporting n) and the odds used
+at each layer; the conditional payoff (farmer share × mean value if it
+launches − plan cost) and its multiple of the plan cost; the expected
+net return under the adopted odds and under the conservative odds, with
+the bootstrap P10/P90; the tail risk (analytic P(negative) under both
+layers, simulated P(negative) with its Wilson interval, P10 net
+return); the two verdicts (adopted / conservative), the production
+verdict, and the labels (CONDITIONAL FARM, BORDERLINE/REVIEW, UNSTABLE);
+and the stability proportions (FARM / MARGINAL / SKIP out of 70 refits).
+The table is shipped in `data.js` and rendered on the dashboard as a
+sortable view next to the board, so a reader can audit any verdict
+from its valuation without re-running the model.
+
 ## Single final artifact (v1.4)
 
 board.json, data.js, the dashboard, the screenshots, dossier.json, and
@@ -1025,6 +1259,29 @@ hand — all are read from the build output.
   with the validation (median absolute error, Spearman, Kendall);
   the reproducibility record's snapshot sha256 equals the input
   file's hash.
+
+- **v1.6 checks (run at build time, fail the build):** the production
+  verdict is decided by the analytic gate statistics — every board row's
+  analytic gate pass/fail under each odds layer is recomputed from its
+  predicted log, sigma, plan cost and the layer's launch odds, and must
+  match the recorded verdict (up to the BORDERLINE and stability
+  demotions, which are themselves recomputed); every simulated
+  P(negative) lies inside its 95% Wilson interval around the analytic
+  value, and |simulated − analytic| ≤ 0.02; every BORDERLINE row is
+  MARGINAL with the REVIEW label and a recorded borderline reason, and
+  no BORDERLINE row is FARM or SKIP; the two verdicts are consistent —
+  the production verdict equals the conservative verdict except for the
+  recorded demotions, and `conditional_farm` is true exactly when the
+  adopted verdict is farm and the conservative verdict is not; the
+  stability proportions per row sum to 70 and the stability threshold
+  is 35/70 (50%), applied before results; the ranking tournament's OLS
+  pooled Spearman reproduces 0.2895 (the fit is unchanged) and every
+  challenger is recomputed from the fold training rows only; the
+  valuation-to-decision table has 198 rows, one per board row, in board
+  order, and every number in it reconciles with `board.json` and
+  `data.js`; the gate (f) audit's breakeven multiples recompute to
+  5.09× adopted / 6.33× conservative; charter version v1.6 and model
+  version radar-13 are recorded in the reproducibility package.
 
 ## Per-fold reporting and slices
 
@@ -1111,3 +1368,22 @@ hand — all are read from the build output.
   prespecified two-layer adoption rule; verdicts flip often under
   LOPO refits (543 moves) and ranks are shown as ranges where the
   data does not support a single precise rank.
+- **v1.6 additions:** the production verdict is decided by the analytic
+  gate statistics, with the simulation as a cross-check — the board's
+  FARM count is therefore the analytic count, and the simulation's
+  ±3-row Monte Carlo noise no longer moves verdicts; rows within
+  ±0.01 of a gate ceiling, or where the analytic and simulated gates
+  disagree, are BORDERLINE and land in MARGINAL with a REVIEW label,
+  never FARM or SKIP; gate (f) is a risk-screening policy, not a profit
+  gate — its 3× conditional payoff is below the 5.09×/6.33× breakeven
+  multiples, so some (f) farms have a negative expected net return and
+  the audit says which ones; every row shows two verdicts (adopted and
+  conservative) and a CONDITIONAL FARM label when only the adopted
+  layer passes; a production FARM is STABLE only when at least 35 of
+  70 LOPO refits agree with it, and the proportions are shown next to
+  every verdict; the ranking tournament tests TVL-only,
+  median-by-category and global-median against OLS on ranking metrics,
+  and OLS stays unless a challenger clears the prespecified
+  +0.10 Spearman / +0.05 Kendall / top-10 tie bar; the fold-80
+  inversion is tested per listing-date tercile and per listing-year
+  cohort, and the per-cohort numbers are descriptive at n < 10.

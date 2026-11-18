@@ -1,4 +1,4 @@
-# Reproduce this board (radar-12, charter v1.5)
+# Reproduce this board (radar-13, charter v1.6)
 
 Everything needed to rebuild the board from the sealed snapshot. No network,
 no credentials, no GPU.
@@ -9,9 +9,9 @@ no credentials, no GPU.
 |---|---|
 | Dataset | DefiLlama snapshot, as of 2026-11-14 (`../kit/token-radar-01-kit/input/snapshot.json`) |
 | Snapshot sha256 | `42a71213519479f3a180cc5010cbbf6bd18a2447fa0ad29e4c5122b6c9184393` (computed from the input file at build time, never typed by hand) |
-| Charter | `EVALUATION_CHARTER.md` v1.5 (locked before fitting) |
-| Model | radar-12 — OLS fit, intercept 3.7686, slope log-TVL 0.4105, floor $25M, n = 70 dated comps |
-| Gate | (f) — conditional mean EV > 3× plan cost AND P(negative) ≤ 1 − 0.75 × p_L, under both the adopted (16.4%) and conservative (13.64%) launch odds |
+| Charter | `EVALUATION_CHARTER.md` v1.6 (locked before fitting) |
+| Model | radar-13 — OLS fit, intercept 3.7686, slope log-TVL 0.4105, floor $25M, n = 70 dated comps |
+| Gate | (f) — conditional mean EV > 3× plan cost AND P(negative) ≤ 1 − 0.75 × p_L, analytic, under both the adopted (16.4%) and conservative (13.64%) launch odds; the simulation is only a cross-check. A BORDERLINE row (within ±0.01 of a ceiling under either layer, or analytic/sim gate disagreement) is MARGINAL for REVIEW, never farm or skip |
 
 ## Locked constants
 
@@ -58,7 +58,7 @@ Verify the rebuild:
 mkdir -p out2 && MAKEFUN_OUTPUT_DIR=out2 node main.ts --input ../kit/token-radar-01-kit/input/snapshot.json
 diff -r out out2
 
-# leakage self-test (58 checks; ~1–2 min, the 2000-refit bootstrap is the slow part)
+# leakage self-test (67 checks; ~1–2 min, the 2000-refit bootstrap is the slow part)
 node scripts/leakage-test.ts --input ../kit/token-radar-01-kit/input/snapshot.json
 ```
 
@@ -66,7 +66,7 @@ node scripts/leakage-test.ts --input ../kit/token-radar-01-kit/input/snapshot.js
 
 | file | contents |
 |---|---|
-| `board.json` | 198 rows, verdicts 55 farm / 41 marginal / 102 skip |
+| `board.json` | 198 rows, verdicts 28 farm / 76 marginal / 94 skip; 73 BORDERLINE rows, all marginal |
 | `data.js` | the full validation object (`window.RADAR`), incl. `reproducibility` |
 | `dashboard/` | `index.html`, `app.js`, `style.css` — open `index.html` in a browser |
 | `screenshots/` | 1-board + 2-detail at 1440×900, 3-filtered at 1440×1250 |
@@ -76,9 +76,11 @@ node scripts/leakage-test.ts --input ../kit/token-radar-01-kit/input/snapshot.js
 ## What to check first
 
 - `data.js` → `reproducibility.snapshot_sha256` must equal the hash above.
-- `board.json` → 55 farm / 41 marginal / 102 skip; top 3 polymarket / sentora / predict-fun.
+- `board.json` → 28 farm / 76 marginal / 94 skip; top 3 polymarket / sentora / predict-fun.
 - `data.js` → `validation.ranking_stability.nested_pooled_spearman` = 0.2895,
   `nested_pooled_kendall` = 0.2063; `validation.final_evaluation.pooled` reconciles
   with the nested, walk-forward, R² and conformal numbers.
-- `data.js` → `validation.gate_test.adopted` = 'f'; variant (f) 61/61 adopted/conservative,
-  variant (d) 4/0.
+- `data.js` → `validation.gate_test.adopted` = 'f'; variant (f) analytic 64/64,
+  simulation cross-check 61/61; variant (d) analytic 7/0, simulation 4/0.
+- `data.js` → `validation.gate_f_audit.n_candidates` = 64, all with positive
+  expected net return under both odds layers; `validation.ranking_tournament.adopted` = 'ols'.
