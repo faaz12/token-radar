@@ -1,22 +1,28 @@
-# Evaluation Charter v1.6 — Token Radar (radar-13)
+# Evaluation Charter v1.7 — Token Radar (radar-14)
 
-Locked **before** fitting radar-13. Any change after results creates a new
-charter version and labels the prior results **exploratory**. Radar-12 numbers
-were computed under charter v1.5; the evaluation procedure changed in v1.6
-(analytic-first decisions with Monte Carlo confidence intervals and
-BORDERLINE/REVIEW labels, gate (f) re-audit with expected net return per
-row and the "risk-screening policy" name, two verdicts per protocol
-(adopted + conservative) with CONDITIONAL FARM, per-row stability scores
-with a prespecified 50% threshold, a ranking tournament of simple models
-against OLS on ranking metrics, per-cohort and per-regime ranking
-evaluation for the fold-80 failure, and one valuation-to-decision table
-for all 198 rows), so radar-12 numbers are **exploratory under
-v1.6** and must not be quoted as v1.6 results. Radar-12 is frozen in
-`hidden_files/radar-12-freeze/` (board, data, dossier, metrics,
-CHARTER-v1.5.md, FREEZE.md, snapshot sha256
+Locked **before** fitting radar-14. Any change after results creates a new
+charter version and labels the prior results **exploratory**. Radar-13 numbers
+were computed under charter v1.6; the evaluation procedure changed in v1.7
+(comps-fitted mcap/TVL ratio valuation as a second lens, costed farm plans
+with a slippage/fees component and a per-protocol net-EV gate candidate (g),
+target comparability with an explicit mcap-vs-FDV split, algorithmic
+MARGINAL tiering via fractional Kelly and EV-per-dollar-at-risk, a
+realized-outcome holdout on the untouched 90% fold evaluated after the
+freeze, ranking calibration with cluster-bootstrap intervals,
+precision/recall and a reliability diagram, and an extended
+decision-trace table), so radar-13 numbers are **exploratory under
+v1.7** and must not be quoted as v1.7 results. Radar-13 is frozen in
+`hidden_files/radar-13-freeze/` (board, data, dossier, metrics,
+CHARTER-v1.6.md, FREEZE.md, snapshot sha256
 42a71213519479f3a180cc5010cbbf6bd18a2447fa0ad29e4c5122b6c9184393).
 
 ## Errata to v1.6 (2026-11-18, before Q11 — prose correction, no procedure change)
+
+Carried into v1.7 unchanged: the v1.6 Wilson cross-check is the aggregate
+form — **Wilson misses ≤ 33 of 396** (the 99.9% upper bound of the binomial
+miss count at a 5% mean) **and |simulated − analytic| ≤ 0.02 for every
+row**. The two sentences quoted below remain superseded prose, kept for
+the audit trail; v1.7 does not restore the literal wording.
 
 Two sentences in this charter state the Wilson cross-check in a form that
 is statistically unimplementable, and are corrected here. The original
@@ -161,6 +167,61 @@ and assumptions change — and the target is NOT "more farms" or "a higher
 leaderboard score". The fit is unchanged unless a prespecified ranking
 improvement is demonstrated; rain and obol stay in the fit; no threshold
 is moved after seeing a farm count.
+
+## Errata to v1.7 (2026-11-18, before the radar-14 final build — threshold correction, no other procedure change)
+
+The LOW-SIZE FARM tier rule as first written sets the quarter-Kelly bar
+at 0.02. That bar is structurally unachievable on this data: the
+quarter-Kelly fraction is computed analytically from the capped
+lognormal, and its maximum over all 198 board rows is 0.012 — no row
+can ever clear 0.02, so the tier as written can never fire. It is a dead
+rule of the same kind v1.3 corrected (the P25 gate): a threshold set
+without computing the scale it measures, which cannot pass for any row.
+The correction is **quarter-Kelly ≥ 0.01** (1% of bankroll at
+quarter-Kelly — the materiality bar). The correction does not select a
+count: the LOW-SIZE FARM set is identical for every Kelly threshold in
+[0.005, 0.012] and for every EV-per-dollar threshold in [0.25, 0.63]
+(the binding conditions are the two-layer positive net EV, the
+EV-per-dollar bar, the P(negative) ceiling and the not-BORDERLINE
+condition — the Kelly bar is not binding anywhere in that range), so no
+threshold value inside the plausible range changes which rows tier.
+The first radar-14 build (r14a, uncorrected 0.02) is superseded and is
+not a v1.7 result; the final build uses 0.01. The sensitivity grid is
+unchanged. This erratum changes one threshold and no other procedure,
+no board verdict, and no other result.
+
+## Why v1.7 exists — the defect it fixes
+
+Under v1.6 the board is honest but unactionable where it matters most.
+Seventy-three BORDERLINE rows (36.9% of the board) sit in MARGINAL with
+no split — a farmer cannot tell a near-farm from a near-skip, and no
+sizing guidance exists anywhere on the board. The farm plan cost has no
+slippage or fees component, so the 5.09×/6.33× breakeven multiples are
+flat hurdles applied to every protocol alike, not per-protocol net-EV
+thresholds that reflect what each farm actually costs. The valuation
+rests on a single lens (OLS on log-TVL) with no comps-fitted
+ratio cross-check. The ranking is weak out of sample (pooled Spearman
+0.2895, fold 80 negative at −0.2857) and is reported as a point estimate
+with no calibration interval, no precision/recall, and no reliability
+diagram — so nobody can tell whether the ranking beats chance by a
+margin that matters. No realized-outcome holdout has ever been
+evaluated after a freeze: every validation number is an error against
+a snapshot value, never a check of whether the farms the radar would
+have picked actually paid. And the target itself has never been
+pinned down in one place with the FDV alternative explicitly split
+off, so a reader cannot tell which valuation the board is and is not
+claiming. Two independent reviews of radar-13 (Q11) both said NO to
+submitting it — Gemini reversed its earlier YES — so radar-14 does
+the work both reviews asked for, in this order: (1) a comps-fitted
+valuation lens, (2) costed farm plans with a per-protocol net-EV
+hurdle, (3) one pinned target with the FDV split made explicit,
+(4) algorithmic MARGINAL tiering, (5) a realized-outcome holdout
+evaluated after the freeze, (6) ranking calibration, (7) a decision
+trace table that carries every field the verdict rests on. The fit
+is unchanged unless a prespecified rule says otherwise; rain and
+obol stay in the fit; no threshold is moved after seeing a farm
+count; gate (f) keeps its "risk-screening policy" label unless the
+net-EV audit proves otherwise under the prespecified rule.
 
 ## Question, target, grain, decision time
 
@@ -1217,6 +1278,257 @@ The table is shipped in `data.js` and rendered on the dashboard as a
 sortable view next to the board, so a reader can audit any verdict
 from its valuation without re-running the model.
 
+## Comps-fitted ratio valuation (v1.7) — a second lens on the same comps
+
+The production valuation is OLS on log-TVL (intercept 3.7686, slope
+0.4105). v1.7 adds a second, comps-fitted lens that uses only fields
+the snapshot carries: the **mcap/TVL ratio model**. For each of the 70
+dated comps, log10(mcap_usd / TVL_usd) is regressed by OLS on
+[1, log10(TVL + $25M)] — the same feature, the same 70 rows, the same
+nested folds (50–80 selection, 90 untouched). The ratio lens predicts
+log10 value as predicted log ratio + log10(TVL + $25M), i.e. the same
+target (snapshot market cap) seen through the ratio instead of the
+level. Reported: the ratio fit (intercept, slope), its nested
+selection-pooled median absolute log error on identical folds, its
+board Spearman ρ and top-10/top-20 overlap against the production
+board, and its LOPO maximum |Δpredicted log|.
+
+- **What is NOT fitted.** FDV/TVL at TGE and airdrop allocation %
+  cannot be fitted: the snapshot carries **no FDV field, no TGE date,
+  no airdrop field, no VC-tier/raise field, and no price history**.
+  A valuation that needs those fields is recorded here as a **data
+  gap, not built, and no value is invented for it**. The ratio lens
+  is the closest comps-fitted valuation the data supports; the gap
+  (FDV at TGE, airdrop %, VC tier/raise, TVL growth velocity beyond
+  the 7-day change already carried) is listed in the state file
+  caveats and in the charter's known limitations.
+- **Adoption rule (prespecified, before results):** the ratio lens
+  replaces the OLS production valuation only if its nested
+  selection-pooled median absolute log error improves on the OLS
+  production value (0.3203 dex) by **> 0.01 dex** — the same bar as
+  the winsorization candidate. Otherwise the OLS fit stays the
+  production fit and the ratio lens is reported as a cross-check
+  only. The valuation fit stays OLS 3.7686/0.4105 unless this rule
+  fires. The ranking tournament's OLS benchmark is unaffected by
+  this section: it still benchmarks the production fit.
+
+## Costed farm plans and gate (g) (v1.7) — what a farm actually costs
+
+The v1.6 plan cost is deposit ($10,000) + 7 × gas(main chain) +
+opportunity cost (10% annual on the deposit over the hold days).
+v1.7 keeps that cost as the **base plan cost** and adds the missing
+component as an explicit, conservative, uniform assumption:
+
+- **Slippage/fees:** `slippage_fee_rate = 0.5%` of the $10,000
+  deposit = **$50 per plan**, the same for every row. It is an
+  **assumption, not a measurement**: the snapshot carries no
+  per-protocol gas, slippage, or fee field, and no per-protocol
+  value is invented. The $50 is conservative (it exceeds the
+  $0.05–$8 per-transaction gas the model already prices) and is
+  sensitivity-tested: the gate test and the board are recomputed at
+  0% and at 1.0% and the farm counts reported, so the reader sees
+  how much of any verdict the assumption carries.
+- **Costed plan:** per row, `C_i = base plan cost + slippage/fees`,
+  published as its components (deposit, gas total, opportunity cost,
+  slippage/fees, total). **Net EV** per row is the analytic expected
+  net return computed against C_i (not the base cost): net EV =
+  p_L × 0.25% × E[capped value | launch] − C_i, under both odds
+  layers. The base-cost EV is still reported alongside so the
+  change is auditable.
+- **Gate candidate (g) — the per-protocol net-EV hurdle.** FARM iff
+  **conditional mean net EV > breakeven multiple × C_i** AND
+  P(negative return) ≤ 1 − 0.75 × p_L, where the breakeven multiple
+  is (1 − p_L) / p_L **of the layer the gate is evaluated under**
+  (5.09× adopted / 6.33× conservative) and the conditional mean net
+  EV is computed against C_i. Gate (g) differs from gate (f) only
+  in the hurdle: (f) tests the conditional payoff against a flat 3×
+  the base plan cost; (g) tests the conditional net payoff against
+  the per-protocol breakeven multiple of the full costed plan.
+  Gate (g) is a **profitability hurdle, not a screen**: a (g) farm
+  has a positive expected net return by construction at the layer
+  it passes. The P(negative) ceiling is (f)'s odds-consistent
+  ceiling, unchanged.
+- **Adoption rule (prespecified, before results):** candidate (g)
+  is tested under the **same two-layer adoption rule as (a)–(f)**
+  (fires AND filters under BOTH odds layers; worst farm's
+  P(negative) under the conservative layer ≤ 0.90; among eligible
+  policies adopt the one with the lowest worst-farm P(negative)
+  under the conservative layer; ties go to the earlier letter, with
+  (g) last). If (g) is adopted, the board's FARM verdicts follow
+  (g) and the gate (f) audit is still published for comparison; the
+  "risk-screening policy" label then applies to (f) only, and (g)
+  is labeled a **net-EV gate**. If (g) is not eligible, (f) stays
+  adopted and the label stays. The gate is never re-chosen after
+  seeing which policy farms most, and the farm count is never a
+  target.
+
+## Target comparability (v1.7) — one target, one timestamp, FDV split off
+
+- **The target is pinned once, here:** `log10(market cap in USD)`
+  as recorded in the sealed snapshot at the snapshot date (`as_of`
+  2026-11-14), market cap = circulating-supply × price at the
+  snapshot time, as recorded by the snapshot's own source. One
+  target, one timestamp, one grain (one protocol), one decision
+  time (the snapshot date). Every validation number in this charter
+  is computed against this target unless a section says otherwise
+  in its own words.
+- **FDV is a separate target, not this one, and is not built.**
+  FDV (total supply × price), FDV-at-TGE, and FDV-median-days-3–7
+  after TGE are different observations from snapshot market cap.
+  The snapshot carries no FDV field and no price history, so no
+  FDV target can be built or verified from this data, and market
+  cap and FDV are **never merged** into one target. The
+  target-comparability table reports, for the record: the target
+  definition, the timestamp, the grain, the decision time, the
+  field the snapshot actually carries (mcap_usd), the fields it
+  does not carry (FDV, TGE date, price history), and the
+  consequence — any comparison of this radar's error against
+  another entry's error is valid only if target, dates, and error
+  definition match, and no such comparison is claimed here.
+- **Sensitivity (recomputed, not assumed):** the training and OOS
+  numbers are recomputed under the pinned target (they already
+  are — this section pins rather than changes them), and the
+  sensitivity of the board ranking to the target definition is
+  measured by the ratio-lens board (same target, second lens) and
+  by the cap-sensitivity stress test (uncapped / P90 / P95 / max):
+  if the top-10 moves materially across lenses or caps, the report
+  says so. No FDV sensitivity is computed because no FDV data
+  exists to compute it from.
+
+## MARGINAL tiering (v1.7) — the 73 BORDERLINE rows, split algorithmically
+
+A MARGINAL verdict is the uncertainty verdict, but not all marginals
+are the same: some are near-farms with a positive expected net return
+under both odds layers, some are near-skips with a negative one. v1.7
+splits **every MARGINAL row** into one of three deterministic tiers.
+The tiers are **sizing guidance inside MARGINAL only**: they never
+change a verdict, never promote a row to FARM, and never demote a
+row to SKIP. A BORDERLINE row keeps its REVIEW label whatever its
+tier. The tiering is computed from the same analytic numbers as the
+verdict (no separate logic), in fixed order:
+
+- **Inputs per row:** net EV under the adopted odds and under the
+  conservative odds (against the full costed plan C_i), the
+  analytic P(negative) under the conservative layer, and the
+  fractional-Kelly size below. **EV-per-dollar-at-risk** =
+  net EV (conservative) / C_i.
+- **Fractional Kelly (prespecified):** the farm is treated as a
+  binary bet — win with probability w = 1 − P(negative) under the
+  conservative layer; on a win the net gain is G = E[net return |
+  net return > 0] and on a loss the net loss is L = E[|net return| |
+  net return < 0], both computed analytically from the capped
+  lognormal (the truncated mean above/below the breakeven value,
+  closed form with the normal CDF — the same distribution the EV
+  already uses, no new simulation). The full-Kelly fraction is
+  f\* = w − (1 − w) / b with b = G / L (the payoff odds); the board
+  uses **quarter-Kelly, f = 0.25 × max(0, f\*)**, a conservative
+  sizing that never bets the full Kelly fraction. A row with
+  f\* ≤ 0 has no positive edge and its Kelly size is 0.
+- **Tier rule (deterministic, fixed before results):**
+  - **LOW-SIZE FARM** iff net EV > 0 under BOTH odds layers AND
+    EV-per-dollar-at-risk ≥ 0.5 AND quarter-Kelly f ≥ 0.01 AND
+    P(negative) conservative ≤ 0.90 AND the row is not BORDERLINE.
+    (A near-farm with a real edge: positive net EV at both layers,
+    at least fifty cents of expected net return per dollar at risk,
+    and a Kelly size of at least 1% of bankroll.)
+  - **WATCHLIST** iff not LOW-SIZE FARM and (net EV > 0 under the
+    adopted layer OR the row is BORDERLINE). (Worth watching: a
+    positive adopted-layer expectation, or a coin-flip row the
+    guards caught.)
+  - **HOLD** otherwise: net EV ≤ 0 under the adopted layer and not
+    BORDERLINE. (No edge at either layer: hold, do not farm.)
+- **Reporting:** the tier counts, the tier of every marginal row in
+  the trace table, the Kelly fraction and EV-per-dollar-at-risk per
+  marginal row, and the sensitivity of the tier counts to the
+  thresholds (Kelly 0.01/0.02/0.05; EV-per-dollar 0.25/0.5/1.0).
+  The thresholds are fixed here, before any v1.7 result exists,
+  and are never moved to preserve a tier count.
+
+## Realized-outcome holdout (v1.7) — freeze first, then look
+
+No realized outcome exists outside the snapshot: there are no
+post-snapshot prices, no TGE outcomes, and no realized farm returns
+in this repo, and **none is invented**. The closest valid realized
+holdout the data supports is the **untouched 90% fold** — the
+newest 7 dated comps — evaluated **after the v1.7 charter and the
+v1.7 model are frozen**, with realized value = each comp's actual
+snapshot market cap at as_of (a realized value the model never
+trained on and never selected on). Reported, per row and pooled:
+
+- Predicted log value vs realized log market cap (signed and
+  absolute log error), and the fold's Spearman and Kendall.
+- **% FARM-equivalent that were actually profitable:** for the
+  rows the frozen model would have ranked in its top-3 by implied
+  value, the share whose realized value clears the breakeven
+  value (plan cost / farmer share) — i.e. the share that would
+  have paid on a $10,000 standard plan at the base-rate odds.
+- **Predicted vs realized net returns:** the realized net return
+  of the top-3 (farmer share × realized value − plan cost, at
+  launch, since these comps did launch) against the model's
+  predicted conditional mean EV for the same rows.
+- A bootstrap 95% interval (2000 resamples, seed 20261120) on the
+  % profitable and on the fold Spearman — with n = 7 the intervals
+  are wide, and the report says so instead of hiding it.
+- **The limitation, stated:** this holdout is within-snapshot
+  (realized values at as_of, not post-snapshot TGE outcomes), it
+  has n = 7, and it cannot validate post-launch farm returns. It
+  is the valid version of the realized-outcome check the data
+  supports — and it is compared against the same baseline the
+  charter already uses (the base rate and the OLS fit), not
+  against a fabricated realized price.
+
+## Ranking calibration (v1.7) — intervals, precision/recall, reliability
+
+The pooled out-of-sample rank correlation is a point estimate on
+28 rows; v1.7 calibrates it before any claim is made from it:
+
+- **Cluster-bootstrap intervals:** 2000 resamples (seed 20261120)
+  of the 28 pooled selection-fold test rows, resampled by protocol
+  (one row per protocol — the cluster is the row here, as in v1.5),
+  recomputing the pooled Spearman and Kendall on each resample.
+  Reported: the 95% interval for each, and whether it excludes
+  zero. The intervals are descriptive — they calibrate the ranking
+  claim, they gate nothing.
+- **Precision and recall, pooled:** top-5, top-10 and top-20
+  precision and recall of the predicted ordering against the
+  actual ordering on the 28 pooled selection rows (precision =
+  overlap / k, recall = overlap / k on a k-of-28 set — reported
+  with the overlap counts, never as a bare percentage).
+- **Reliability diagram and scores for the launch odds:** the
+  base-rate launch prediction (a constant 16.43%) and the
+  seasoning curve are scored on the 645 dated protocols with
+  Brier score and log-loss, and the reliability diagram bins the
+  seasoning curve's predictions (10 bins) against the observed
+  launch rate per bin, with n per bin. A constant prediction has
+  one bin — the diagram shows that instead of pretending the
+  base rate is calibrated per row. The base rate stays the
+  board's odds unless the prespecified v1.3 adoption test is
+  passed; this section calibrates, it does not adopt.
+- **The ranking tournament is unchanged** (OLS vs TVL-only /
+  median-by-category / global-median, same adoption bar), and its
+  result is reported next to the calibration intervals so a
+  tournament win is read with its uncertainty attached.
+
+## Decision trace table, extended (v1.7) — every field the verdict rests on
+
+The v1.6 valuation-to-decision table (198 rows, board order) is
+extended, not replaced. Every row now also carries: the costed
+plan components (deposit, gas total, opportunity cost,
+slippage/fees, total C_i); the **raw EV** (against the base plan
+cost) and the **net EV** (against C_i) under both odds layers, with
+the bootstrap P10/P90 of the net EV; the P(negative) under both
+layers (adopted + conservative); the breakeven multiple under both
+layers and the row's conditional multiple against C_i; the gate
+verdict under the adopted gate at each layer; the OOD tier and
+which flags fired; the BORDERLINE flag and reason; the stability
+proportions (FARM / MARGINAL / SKIP out of 70 refits); the MARGINAL
+tier (WATCHLIST / LOW-SIZE FARM / HOLD, or null for non-marginal
+rows) with its Kelly fraction and EV-per-dollar-at-risk; the
+production verdict; and a one-line reason naming the deciding
+rule. The table is shipped in `data.js` and rendered on the
+dashboard as a sortable view next to the board. A row whose
+verdict cannot be reconstructed from its trace fails the build.
+
 ## Single final artifact (v1.4)
 
 board.json, data.js, the dashboard, the screenshots, dossier.json, and
@@ -1241,6 +1553,9 @@ hand — all are read from the build output.
   (50–80) and reported on the 90% fold as a check where applicable; no
   decision-engine component is selected on the 90% fold. Board-level farm
   counts are descriptive of the production population, not test-set claims.
+  **v1.7:** the realized-outcome holdout evaluates the untouched 90% fold
+  AFTER the v1.7 charter and model are frozen, and it selects or tunes
+  nothing — its numbers are reported, never fed back into a choice.
 - If the charter changes, version it and label prior results exploratory.
 
 ## Required leakage checks (run at build time, fail the build)
@@ -1307,6 +1622,36 @@ hand — all are read from the build output.
   `data.js`; the gate (f) audit's breakeven multiples recompute to
   5.09× adopted / 6.33× conservative; charter version v1.6 and model
   version radar-13 are recorded in the reproducibility package.
+
+- **v1.7 checks (run at build time, fail the build):** the ratio
+  valuation's nested selection-pooled metric recomputes from the
+  fold training rows only, and its adoption decision follows the
+  prespecified > 0.01 dex bar against the OLS production value
+  (0.3203 dex); the costed plan's components sum to C_i on every
+  row (deposit + gas + opportunity + slippage/fees = total) and
+  the slippage/fees equal 0.5% of the deposit; the net EV
+  recomputes from C_i under both odds layers; gate candidate (g)
+  recomputes per row and the adopted gate follows the two-layer
+  adoption rule over (a)–(g) (or falls back to (a) with a stated
+  reason); the sensitivity recompute at 0% and 1.0% slippage
+  reports farm counts; every MARGINAL row carries exactly one tier
+  (WATCHLIST / LOW-SIZE FARM / HOLD) and every FARM/SKIP row
+  carries none; a LOW-SIZE FARM row has net EV > 0 under both
+  layers, EV-per-dollar-at-risk ≥ 0.5, quarter-Kelly ≥ 0.01,
+  conservative P(negative) ≤ 0.90, and is not BORDERLINE; the
+  Kelly fraction recomputes from the analytic truncated means and
+  lies in [0, 0.25]; the realized holdout has exactly the 7
+  untouched-90% rows, its % profitable and its Spearman lie in
+  their bootstrap intervals, and no row outside the 90% fold
+  enters it; the ranking-calibration bootstrap CIs contain the
+  pooled Spearman/Kendall point estimates and the top-5/10/20
+  precision and recall recompute from the pooled overlaps; the
+  extended trace table has 198 rows, one per board row, in board
+  order, and every new field reconciles with `board.json` and
+  `data.js`; the target-comparability table states the pinned
+  target, the timestamp, and the FDV gap (no FDV field in the
+  snapshot); charter version v1.7 and model version radar-14 are
+  recorded in the reproducibility package.
 
 ## Per-fold reporting and slices
 
@@ -1412,3 +1757,24 @@ hand — all are read from the build output.
   +0.10 Spearman / +0.05 Kendall / top-10 tie bar; the fold-80
   inversion is tested per listing-date tercile and per listing-year
   cohort, and the per-cohort numbers are descriptive at n < 10.
+- **v1.7 additions:** the board's 73 BORDERLINE rows are split
+  algorithmically into WATCHLIST / LOW-SIZE FARM / HOLD tiers by a
+  deterministic rule (net EV at both layers, EV-per-dollar-at-risk,
+  quarter-Kelly) — the tiers are sizing guidance inside MARGINAL
+  and never change a verdict; the farm plan now costs its
+  slippage/fees as an explicit uniform $50 assumption (0.5% of the
+  deposit), sensitivity-tested at 0% and 1.0%, and gate candidate
+  (g) tests the conditional payoff against the per-protocol
+  breakeven multiple of the full costed plan; the valuation has a
+  second lens (the comps-fitted mcap/TVL ratio model) that can
+  replace OLS only on the prespecified > 0.01 dex bar — FDV/TVL
+  at TGE, airdrop allocation %, VC tier/raise, and per-protocol
+  gas/slippage cannot be built from this snapshot and are recorded
+  as data gaps, with no value invented for any of them; the
+  realized-outcome holdout is the untouched 90% fold (n = 7),
+  evaluated after the freeze, with realized values at as_of —
+  it cannot validate post-snapshot TGE outcomes; the ranking
+  calibration (bootstrap intervals, precision/recall, reliability)
+  is reported next to the pooled Spearman 0.2895 / Kendall 0.2063,
+  which remain weak; the target is pinned once (snapshot market
+  cap at 2026-11-14) with FDV explicitly split off as unbuildable.

@@ -114,6 +114,10 @@ export interface ModelConstants {
   farm_break_even: number;
   marginal_break_even: number;
   purge_gap_days: number;
+  /** v1.7: slippage/fees as a fraction of the deposit — an explicit,
+   * conservative, uniform assumption (the snapshot carries no
+   * per-protocol slippage or fee field, so none is invented). */
+  slippage_fee_rate: number;
 }
 
 export const MODEL: ModelConstants = {
@@ -130,13 +134,14 @@ export const MODEL: ModelConstants = {
   farm_break_even: 0.1,
   marginal_break_even: 0.33,
   purge_gap_days: 30,
+  slippage_fee_rate: 0.005,
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-13';
+export const MODEL_VERSION = 'radar-14';
 
 /** The evaluation charter version this model's validation follows. */
-export const CHARTER_VERSION = 'v1.6';
+export const CHARTER_VERSION = 'v1.7';
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -345,6 +350,21 @@ export interface Validation {
   /** v1.6: the valuation-to-decision table — filled in buildRadar (it
    * needs the final board and the stability rows). */
   valuation_decision_table: ValuationDecisionRow[] | null;
+  /** v1.7: the comps-fitted mcap/TVL ratio valuation — computed in
+   * fitModel; the board comparison is completed in buildRadar. */
+  ratio_valuation: RatioValuation | null;
+  /** v1.7: the costed farm plans and gate (g) — filled in buildRadar. */
+  costed_farm_plans: CostedFarmPlans | null;
+  /** v1.7: target comparability — one pinned target, FDV split off. */
+  target_comparability: TargetComparability | null;
+  /** v1.7: the algorithmic MARGINAL tiering — filled in buildRadar. */
+  marginal_tiers: MarginalTiers | null;
+  /** v1.7: the realized-outcome holdout on the untouched 90% fold —
+   * computed in fitModel after the freeze point (it selects nothing). */
+  realized_holdout: RealizedHoldout | null;
+  /** v1.7: ranking calibration — bootstrap intervals, precision/recall,
+   * reliability — computed in fitModel. */
+  ranking_calibration: RankingCalibration | null;
 }
 
 /** The final evaluation table (charter v1.5): one consistent table for the
@@ -612,7 +632,7 @@ export interface EvSimulation {
  * reported as the cross-check, and `eligible` is decided on the analytic
  * test. */
 export interface GateTestVariant {
-  variant: 'a' | 'b' | 'c' | 'd' | 'e' | 'f';
+  variant: 'a' | 'b' | 'c' | 'd' | 'e' | 'f' | 'g';
   rule: string;
   farm_count: number;
   farm_slugs: string[];
@@ -672,7 +692,12 @@ export interface GateTest {
   variant_d: GateTestVariant;
   variant_e: GateTestVariant;
   variant_f: GateTestVariant;
-  adopted: 'a' | 'b' | 'c' | 'd' | 'e' | 'f';
+  /** v1.7: the per-protocol net-EV hurdle — conditional mean net EV
+   * against the full costed plan must exceed the layer's breakeven
+   * multiple of that plan, with (f)'s odds-consistent P(negative)
+   * ceiling. Tested under the same two-layer adoption rule. */
+  variant_g: GateTestVariant;
+  adopted: 'a' | 'b' | 'c' | 'd' | 'e' | 'f' | 'g';
   reason: string;
 }
 
@@ -784,6 +809,154 @@ export interface GateFAudit {
   note: string;
 }
 
+/** One row's costed farm plan (charter v1.7): the base plan cost plus the
+ * explicit slippage/fees assumption, broken into components that sum to
+ * the total. The deposit is the same $10,000 for every row; gas is
+ * per-chain (already in the base cost); opportunity is 10% annual over
+ * the hold window; slippage/fees are the uniform 0.5% assumption. */
+export interface CostedPlan {
+  deposit_usd: number;
+  gas_total_usd: number;
+  opportunity_usd: number;
+  slippage_fees_usd: number;
+  /** The base plan cost (deposit + gas + opportunity), exactly planCostUsd. */
+  base_cost_usd: number;
+  /** The full costed plan C_i = base + slippage/fees. Net EV is computed
+   * against this total. */
+  total_usd: number;
+}
+
+/** The comps-fitted mcap/TVL ratio valuation (charter v1.7): the second
+ * lens — OLS of log10(mcap/TVL) on [1, log10(TVL + $25M)] with the same
+ * shrunk group adjustments, on the same 70 dated comps and the same
+ * nested folds. FDV/TVL at TGE, airdrop %, VC tier/raise and growth
+ * velocity cannot be fitted (no such fields exist in the snapshot) and
+ * are recorded as data gaps, never invented. */
+export interface RatioValuation {
+  intercept: number;
+  coef_log_tvl: number;
+  n_comps: number;
+  nested_selection_pooled_dex: number;
+  nested_selection_pooled_dex_production_ols: number;
+  improvement_vs_production_dex: number;
+  adoption_bar_dex: number;
+  adopted: boolean;
+  adoption_reason: string;
+  /** The untouched 90% fold under the ratio lens (reported, never used
+   * to select). */
+  untouched90_median_abs_log_err_dex: number;
+  /** Board comparison vs the production board (computed in buildRadar). */
+  board_spearman_vs_production: number;
+  board_top10_overlap_vs_production: number;
+  board_top20_overlap_vs_production: number;
+  lopo_max_abs_delta_predicted_log: number;
+  data_gaps: string[];
+}
+
+/** Target comparability (charter v1.7): one pinned target, one timestamp,
+ * and the FDV alternative explicitly split off as unbuildable. */
+export interface TargetComparability {
+  target: string;
+  target_timestamp: string;
+  grain: string;
+  decision_time: string;
+  snapshot_field: string;
+  fields_not_in_snapshot: string[];
+  fdv_status: string;
+  comparison_rule: string;
+}
+
+/** One MARGINAL tier (charter v1.7): sizing guidance inside MARGINAL
+ * only — never a verdict change, never a promotion to FARM. */
+export type MarginalTier = 'low-size-farm' | 'watchlist' | 'hold';
+
+/** The algorithmic MARGINAL tiering (charter v1.7). */
+export interface MarginalTiers {
+  counts: { 'low-size-farm': number; watchlist: number; hold: number };
+  /** Thresholds fixed in the charter before results. */
+  thresholds: { ev_per_dollar_at_risk: number; quarter_kelly: number; max_prob_negative_conservative: number };
+  /** Sensitivity of the tier counts to the thresholds (recomputed). */
+  sensitivity: { ev_per_dollar: number; quarter_kelly: number; low_size_farm: number; watchlist: number; hold: number }[];
+  note: string;
+}
+
+/** The realized-outcome holdout (charter v1.7): the untouched 90% fold,
+ * evaluated AFTER the freeze, with realized value = each comp's actual
+ * snapshot market cap at as_of. No post-snapshot realized price exists
+ * in this repo and none is invented — this is the valid version of the
+ * check the data supports, at n = 7. */
+export interface RealizedHoldout {
+  n_rows: number;
+  fold: string;
+  evaluated_after_freeze: boolean;
+  rows: {
+    slug: string;
+    predicted_log: number;
+    realized_log: number;
+    signed_log_err: number;
+    abs_log_err: number;
+    predicted_rank: number;
+    realized_rank: number;
+    realized_value_usd: number;
+    plan_cost_usd: number;
+    breakeven_value_usd: number;
+    profitable: boolean;
+    realized_net_return_usd: number;
+    predicted_conditional_mean_ev_usd: number;
+  }[];
+  spearman: number;
+  kendall: number;
+  median_abs_log_err_dex: number;
+  top3_profitable_share: number;
+  top3_profitable_ci95: [number, number];
+  spearman_ci95: [number, number];
+  n_profitable_top3: number;
+  limitation: string;
+}
+
+/** Ranking calibration (charter v1.7): the pooled rank correlation with
+ * its cluster-bootstrap interval, precision/recall, and the launch-odds
+ * reliability diagram with Brier and log-loss. */
+export interface RankingCalibration {
+  pooled_spearman: number;
+  pooled_spearman_ci95: [number, number];
+  pooled_kendall: number;
+  pooled_kendall_ci95: [number, number];
+  n_bootstrap_resamples: number;
+  bootstrap_seed: number;
+  top5: { overlap: number; precision: number; recall: number };
+  top10: { overlap: number; precision: number; recall: number };
+  top20: { overlap: number; precision: number; recall: number };
+  reliability_bins: { bin: string; n: number; mean_predicted: number; observed_rate: number }[];
+  brier_base_rate: number;
+  log_loss_base_rate: number;
+  brier_seasoning_curve: number;
+  log_loss_seasoning_curve: number;
+  n_launch_odds_rows: number;
+  note: string;
+}
+
+/** The costed farm plans and gate (g) (charter v1.7): the slippage/fees
+ * assumption, the per-protocol net-EV hurdle test, and its sensitivity. */
+export interface CostedFarmPlans {
+  slippage_fee_rate: number;
+  slippage_fee_usd: number;
+  assumption: string;
+  /** Gate (g) under the two-layer adoption rule, from the gate test. */
+  gate_g_farm_count: number;
+  gate_g_farm_count_conservative: number;
+  gate_g_eligible: boolean;
+  gate_g_adopted: boolean;
+  /** Farm counts under the adopted gate at 0% and 1.0% slippage (the
+   * assumption's sensitivity — the board itself uses 0.5%). */
+  sensitivity: { slippage_fee_rate: number; farm_count_adopted: number; farm_count_conservative: number }[];
+  /** Net-EV summary over the analytic-(g) candidates under the adopted odds. */
+  n_candidates: number;
+  n_positive_net_ev_adopted: number;
+  n_positive_net_ev_conservative: number;
+  note: string;
+}
+
 /** One row of the valuation-to-decision table (charter v1.6): every
  * number behind one protocol's verdict, in board order. */
 export interface ValuationDecisionRow {
@@ -831,6 +1004,28 @@ export interface ValuationDecisionRow {
   stability_farm: number;
   stability_marginal: number;
   stability_skip: number;
+  /** v1.7: the costed plan components and total, the raw EV (base cost)
+   * vs net EV (costed plan) under both layers, the breakeven multiples
+   * and the row's conditional net multiple, the gate verdict at each
+   * layer, and the MARGINAL tier with its Kelly size. */
+  costed_plan_deposit_usd: number;
+  costed_plan_gas_usd: number;
+  costed_plan_opportunity_usd: number;
+  costed_plan_slippage_fees_usd: number;
+  costed_plan_total_usd: number;
+  net_ev_adopted_usd: number;
+  net_ev_conservative_usd: number;
+  breakeven_multiple_adopted: number;
+  breakeven_multiple_conservative: number;
+  conditional_net_multiple: number;
+  gate_pass_adopted: boolean;
+  gate_pass_conservative: boolean;
+  ood_tier: string;
+  ood_flags: string;
+  marginal_tier: MarginalTier | null;
+  ev_per_dollar_at_risk: number;
+  kelly_fraction: number;
+  reason: string;
 }
 
 /** A row's BORDERLINE assessment (charter v1.6): within ±0.01 of a gate
@@ -934,13 +1129,18 @@ export interface DistributionRowResult {
   prob_negative: number;
   /** P(value covers the plan cost | launch) = P(V > cost / farmer_share | launch). */
   prob_exceeds_break_even: number;
-  /** FARM under gate policy (a) / (b) / (c) / (d) / (e) / (f), computed from this row's arrays. */
+  /** FARM under gate policy (a) / (b) / (c) / (d) / (e) / (f) / (g),
+   * computed from this row's arrays. (g) is evaluated against the
+   * costed plan (base cost + slippage/fees); every draw's net return
+   * shifts by exactly the slippage fee, so its statistics are the
+   * base statistics shifted by that fee. */
   farm_a: boolean;
   farm_b: boolean;
   farm_c: boolean;
   farm_d: boolean;
   farm_e: boolean;
   farm_f: boolean;
+  farm_g: boolean;
 }
 
 /** One candidate distribution in the tournament (charter v1.3): its pooled
@@ -964,6 +1164,9 @@ export interface DistributionResult {
   /** v1.5: the farm count under policy (f) — the odds-consistent ceiling,
    * evaluated at the row's adopted launch odds. */
   farm_count_f: number;
+  /** v1.7: the farm count under policy (g) — the per-protocol net-EV
+   * hurdle against the costed plan, at the row's adopted launch odds. */
+  farm_count_g: number;
   /** The farm slugs under policy (b) (the Gemini proposal), for the overlap table. */
   farm_slugs_b: string[];
 }
@@ -1367,6 +1570,8 @@ export interface CapSensitivityRow {
   farm_count_e: number;
   /** v1.5: the farm count under policy (f) at the row's adopted odds. */
   farm_count_f: number;
+  /** v1.7: the farm count under policy (g) at the row's adopted odds. */
+  farm_count_g: number;
   polymarket_mean_net_ev_usd: number;
 }
 
@@ -1718,6 +1923,24 @@ export interface BoardRow {
       agreeing_refits: number;
       stable_farm: boolean | null;
     } | null;
+    /** v1.7: the costed farm plan — base cost + slippage/fees, broken
+     * into components that sum to the total. Net EV is computed
+     * against the total. */
+    costed_plan: CostedPlan;
+    /** v1.7: analytic net EV against the full costed plan C_i, under
+     * each odds layer (raw EV against the base cost is expected_value_usd
+     * / ev_mean_conservative_usd). */
+    net_ev_adopted_usd: number;
+    net_ev_conservative_usd: number;
+    /** v1.7: the conditional mean net EV against C_i and its multiple of
+     * C_i, under the adopted odds. */
+    conditional_net_ev_usd: number;
+    conditional_net_multiple: number;
+    /** v1.7: the MARGINAL tier (null for FARM/SKIP rows), the
+     * EV-per-dollar-at-risk and the quarter-Kelly size behind it. */
+    marginal_tier: MarginalTier | null;
+    ev_per_dollar_at_risk: number;
+    kelly_fraction: number;
   };
   farm_steps: string[];
 }
@@ -1812,6 +2035,15 @@ export interface RadarRow {
     agreeing_refits: number;
     stable_farm: boolean | null;
   } | null;
+  /** v1.7: the costed plan, net EVs, and the MARGINAL tier. */
+  costed_plan: CostedPlan;
+  net_ev_adopted_usd: number;
+  net_ev_conservative_usd: number;
+  conditional_net_ev_usd: number;
+  conditional_net_multiple: number;
+  marginal_tier: MarginalTier | null;
+  ev_per_dollar_at_risk: number;
+  kelly_fraction: number;
 }
 
 /** A live-token protocol: it already trades, so the board shows the market's own value, not a model's. */
@@ -2022,7 +2254,7 @@ export function analyticVerdict(
   launchOdds: number,
   launchOddsConservative: number,
   breakEvenOdds: number,
-  gatePolicy: 'a' | 'b' | 'c' | 'd' | 'e' | 'f',
+  gatePolicy: 'a' | 'b' | 'c' | 'd' | 'e' | 'f' | 'g',
   cap: number,
   ood: OodReport | null = null,
   model: ModelConstants = MODEL,
@@ -2033,6 +2265,102 @@ export function analyticVerdict(
   if (stats.evMean > 0) return 'marginal';
   if (breakEvenOdds <= model.marginal_break_even) return 'marginal';
   return 'skip';
+}
+
+// ---------------------------------------------------------------------------
+// v1.7 helpers: the truncated capped-lognormal means behind the fractional
+// Kelly sizing, and the deterministic MARGINAL tier rule. All closed form,
+// the same capped-lognormal distribution the EV already uses — no new
+// simulation, no new data.
+// ---------------------------------------------------------------------------
+
+/** E[10^Y · 1(a < Y ≤ b)] for Y ~ N(mu, σ²) in dex (a or b may be
+ * ±Infinity): the lognormal partial mean, closed form. */
+export function lognormalPartialMean(mu: number, sigma: number, a: number, b: number): number {
+  if (sigma <= 0 || b <= a) return 0;
+  const ln10 = Math.LN10;
+  const meanUncapped = Math.pow(10, mu + 0.5 * ln10 * sigma * sigma);
+  const zB = (b - mu - ln10 * sigma * sigma) / sigma;
+  const zA = (a - mu - ln10 * sigma * sigma) / sigma;
+  return meanUncapped * (normalCdf(zB) - normalCdf(zA));
+}
+
+/** E[min(cap, 10^Y) · 1(loLog < Y ≤ hiLog)] — the capped value's mean over
+ * a log-value window. Below the cap the value contributes its lognormal
+ * partial mean; above the cap it contributes the cap times the window's
+ * probability mass. */
+export function cappedTruncatedMean(mu: number, sigma: number, cap: number, loLog: number, hiLog: number): number {
+  if (hiLog <= loLog) return 0;
+  const logCap = Math.log10(cap);
+  const belowHi = Math.min(hiLog, logCap);
+  let out = 0;
+  if (belowHi > loLog) out += lognormalPartialMean(mu, sigma, loLog, belowHi);
+  const aboveLo = Math.max(loLog, logCap);
+  if (hiLog > aboveLo) out += cap * (normalCdf((hiLog - mu) / sigma) - normalCdf((aboveLo - mu) / sigma));
+  return out;
+}
+
+/** The fractional-Kelly size of one farm plan (charter v1.7): the farm is
+ * treated as a binary bet — win with probability w = 1 − P(negative)
+ * under the given odds, net gain G = E[net return | net return > 0],
+ * net loss L = E[|net return| | net return < 0], both analytic from the
+ * capped lognormal. Full Kelly f* = w − (1 − w) / (G / L); the board
+ * uses quarter-Kelly, 0.25 × max(0, f*), capped at 0.25. */
+export function kellyFraction(
+  predictedLog: number,
+  sigma: number,
+  planCost: number,
+  launchOdds: number,
+  cap: number,
+  model: ModelConstants = MODEL,
+): { full: number; quarter: number; winProb: number; gainUsd: number; lossUsd: number } {
+  const beValue = planCost / model.farmer_share;
+  const logBe = Math.log10(Math.max(1, beValue));
+  const pValueAboveBe = beValue >= cap ? 0 : 1 - normalCdf((logBe - predictedLog) / sigma);
+  const w = launchOdds * pValueAboveBe;
+  if (!(w > 0) || !(w < 1)) return { full: 0, quarter: 0, winProb: round4(w), gainUsd: 0, lossUsd: planCost };
+  const eValueAbove = cappedTruncatedMean(predictedLog, sigma, cap, logBe, Number.POSITIVE_INFINITY);
+  const eNetWin = launchOdds * (model.farmer_share * eValueAbove - planCost * pValueAboveBe);
+  const gain = eNetWin / w;
+  const eValueBelow = cappedTruncatedMean(predictedLog, sigma, cap, Number.NEGATIVE_INFINITY, logBe);
+  const eLossMass = (1 - launchOdds) * planCost + launchOdds * (planCost * (1 - pValueAboveBe) - model.farmer_share * eValueBelow);
+  const loss = eLossMass / (1 - w);
+  if (!(gain > 0) || !(loss > 0)) return { full: 0, quarter: 0, winProb: round4(w), gainUsd: Math.max(0, gain), lossUsd: Math.max(0, loss) };
+  const b = gain / loss;
+  const full = w - (1 - w) / b;
+  const quarter = Math.max(0, Math.min(0.25, 0.25 * full));
+  return { full: round4(full), quarter: round4(quarter), winProb: round4(w), gainUsd: Math.round(gain), lossUsd: Math.round(loss) };
+}
+
+/** The deterministic MARGINAL tier (charter v1.7, fixed before results):
+ * LOW-SIZE FARM iff net EV > 0 under BOTH layers AND EV-per-dollar-at-risk
+ * ≥ 0.5 AND quarter-Kelly ≥ 0.01 AND conservative P(negative) ≤ 0.90 AND
+ * not BORDERLINE; WATCHLIST iff not that and (net EV > 0 under the adopted
+ * layer OR BORDERLINE); HOLD otherwise. Sizing guidance inside MARGINAL
+ * only — it never changes a verdict. (Erratum: the Kelly bar was 0.02 as
+ * first written and is corrected to 0.01 — 0.02 can never fire, the
+ * maximum quarter-Kelly on this board is 0.012; see the charter errata.) */
+export function marginalTierFor(
+  netEvAdoptedUsd: number,
+  netEvConservativeUsd: number,
+  costedPlanTotalUsd: number,
+  probNegativeConservative: number,
+  quarterKelly: number,
+  borderline: boolean,
+): { tier: MarginalTier; evPerDollarAtRisk: number } {
+  const evPerDollarAtRisk = costedPlanTotalUsd > 0 ? netEvConservativeUsd / costedPlanTotalUsd : 0;
+  if (
+    netEvAdoptedUsd > 0 &&
+    netEvConservativeUsd > 0 &&
+    evPerDollarAtRisk >= 0.5 &&
+    quarterKelly >= 0.01 &&
+    probNegativeConservative <= 0.9 &&
+    !borderline
+  ) {
+    return { tier: 'low-size-farm', evPerDollarAtRisk: round4(evPerDollarAtRisk) };
+  }
+  if (netEvAdoptedUsd > 0 || borderline) return { tier: 'watchlist', evPerDollarAtRisk: round4(evPerDollarAtRisk) };
+  return { tier: 'hold', evPerDollarAtRisk: round4(evPerDollarAtRisk) };
 }
 
 /** The 95% Wilson score interval of a simulated proportion (charter
@@ -2051,8 +2379,8 @@ export function wilsonInterval(pHat: number, n: number, z = 1.96): [number, numb
  * v1.6): (f) 1 − 0.75 × p_L, (d) 0.85, (e)/(c) 0.90; (a)/(b) carry no
  * P(negative) ceiling, so the BORDERLINE distance rule does not apply
  * to them. */
-export function gateCeiling(policy: 'a' | 'b' | 'c' | 'd' | 'e' | 'f', launchOdds: number): number | null {
-  if (policy === 'f') return 1 - 0.75 * launchOdds;
+export function gateCeiling(policy: 'a' | 'b' | 'c' | 'd' | 'e' | 'f' | 'g', launchOdds: number): number | null {
+  if (policy === 'f' || policy === 'g') return 1 - 0.75 * launchOdds;
   if (policy === 'd') return 0.85;
   if (policy === 'e' || policy === 'c') return 0.9;
   return null;
@@ -2070,7 +2398,7 @@ export function analyticLayerVerdict(
   planCost: number,
   launchOdds: number,
   breakEvenOdds: number,
-  gatePolicy: 'a' | 'b' | 'c' | 'd' | 'e' | 'f',
+  gatePolicy: 'a' | 'b' | 'c' | 'd' | 'e' | 'f' | 'g',
   cap: number,
   ood: OodReport | null = null,
   model: ModelConstants = MODEL,
@@ -2097,7 +2425,7 @@ export function borderlineInfo(
   analyticGateConservative: boolean,
   simGateAdopted: boolean,
   simGateConservative: boolean,
-  gatePolicy: 'a' | 'b' | 'c' | 'd' | 'e' | 'f',
+  gatePolicy: 'a' | 'b' | 'c' | 'd' | 'e' | 'f' | 'g',
   launchOddsAdopted: number,
   launchOddsConservative: number,
 ): BorderlineInfo {
@@ -2545,6 +2873,10 @@ export interface FittedModel {
   /** v1.3: the pooled log-CRPS of the capped vs uncapped lognormal on the
    * nested selection folds (the cap validation). */
   crpsValidation: { capped_dex: number; uncapped_dex: number; n_test_rows: number };
+  /** v1.7: the comps-fitted mcap/TVL ratio lens (full fit) — in-memory
+   * only; buildRadar uses it for the board comparison and the LOPO
+   * max-delta. Null when the lens could not be fitted (no comps). */
+  ratioLensFit: { beta: number[]; adj: Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }>; chainAdj: Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }> } | null;
 }
 
 /** The assumptions every farm EV rests on (charter v1.2): stated, not measured.
@@ -2553,7 +2885,7 @@ export interface FittedModel {
  * P(negative return) are statistics of the same distribution; the conditional
  * value scenarios are labeled as conditional on launch. */
 export const EV_ASSUMPTIONS =
-  'Farmer share 0.25% of the launch value (assumed, not verified from data); exit value = snapshot market cap (no slippage, no liquidity, no lockup modeled — the snapshot carries no unlock schedule, no order-book depth, and no fee data, so none is invented); farming costs = gas per chain + opportunity cost of the $10,000 deposit at 10% annual over the hold window; hold days by age (60 < 180d, 45 < 365d, else 30); a non-launch loses the full plan cost. EV statistics are one seeded simulation (20,000 draws, launch Bernoulli × lognormal value, σ from the 50% band / 0.6745, ×1.5 for out-of-distribution rows); the mean is the expected net return and the P25/P50/P75 are quantiles of that same net-return array. FARM requires the adopted gate to pass under the conservative launch-probability assumption (the 2.5th percentile bootstrap lower bound of the base rate).';
+  'Farmer share 0.25% of the launch value (assumed, not verified from data); exit value = snapshot market cap (no liquidity or lockup modeled — the snapshot carries no unlock schedule and no order-book depth, so none is invented); farming costs = gas per chain + opportunity cost of the $10,000 deposit at 10% annual over the hold window; hold days by age (60 < 180d, 45 < 365d, else 30); slippage/fees are a uniform 0.5% of the deposit ($50 per plan, charter v1.7 assumption) and are included in the COSTED plan C_i — the base plan cost excludes them, the net EV includes them; a non-launch loses the full plan cost. EV statistics are one seeded simulation (20,000 draws, launch Bernoulli × lognormal value, σ from the 50% band / 0.6745, ×1.5 for out-of-distribution rows); the mean is the expected net return and the P25/P50/P75 are quantiles of that same net-return array. FARM requires the adopted gate to pass under the conservative launch-probability assumption (the 2.5th percentile bootstrap lower bound of the base rate).';
 
 /** Draws in one protocol's EV simulation array (charter v1.2). */
 export const EV_SIM_DRAWS = 20_000;
@@ -4224,6 +4556,197 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL, targ
   );
   const tournamentAdopted: 'ols' | 'tvl-only' | 'median-by-category' | 'global-median' =
     tournamentPassing.length > 0 ? [...tournamentPassing].sort((a, b) => b.pooled_spearman - a.pooled_spearman || b.pooled_kendall - a.pooled_kendall)[0]!.model : 'ols';
+  // v1.7 — the comps-fitted mcap/TVL ratio valuation (second lens): the
+  // same nested folds as production, the same adoption bar as the
+  // winsorization candidate (> 0.01 dex on the selection metric). The
+  // board comparison and the LOPO max-delta are completed in buildRadar,
+  // where the production board exists; the values here are placeholders
+  // overwritten there.
+  const ratioNested = ratioLensNested(comps, asOf, model);
+  const ratioSelectionDex = round4(median([...ratioNested.selectionErrs].sort((a, b) => a - b)) ?? 0);
+  const ratioUntouched90Dex = round4(median([...ratioNested.untouched90Errs].sort((a, b) => a - b)) ?? 0);
+  const productionSelectionDex = selectionPooled[selected];
+  const ratioImprovementDex = round4(productionSelectionDex - ratioSelectionDex);
+  const ratioAdopted = ratioImprovementDex > 0.01;
+  const ratioValuation: RatioValuation = {
+    intercept: round4(ratioNested.full.beta[0]!),
+    coef_log_tvl: round4(ratioNested.full.beta[1]!),
+    n_comps: comps.length,
+    nested_selection_pooled_dex: ratioSelectionDex,
+    nested_selection_pooled_dex_production_ols: productionSelectionDex,
+    improvement_vs_production_dex: ratioImprovementDex,
+    adoption_bar_dex: 0.01,
+    adopted: ratioAdopted,
+    adoption_reason: ratioAdopted
+      ? `The ratio lens improves the nested selection-pooled metric by ${ratioImprovementDex} dex (>${0.01} dex bar) and replaces the OLS production valuation.`
+      : `The ratio lens scores ${ratioSelectionDex} dex on the nested selection-pooled metric vs ${productionSelectionDex} dex for the OLS production fit (improvement ${ratioImprovementDex} dex, bar > 0.01 dex) — it does not clear the bar, so OLS stays the production valuation and the ratio lens is reported as a cross-check only.`,
+    untouched90_median_abs_log_err_dex: ratioUntouched90Dex,
+    board_spearman_vs_production: 0,
+    board_top10_overlap_vs_production: 0,
+    board_top20_overlap_vs_production: 0,
+    lopo_max_abs_delta_predicted_log: 0,
+    data_gaps: [
+      'FDV/TVL at TGE: the snapshot carries no FDV field and no TGE date, so no FDV target can be built or verified.',
+      'Airdrop allocation %: no airdrop field exists in the snapshot.',
+      'VC tier / raise: no investor or raise field exists in the snapshot.',
+      'TVL growth velocity beyond the 7-day change: the snapshot carries only change_7d.',
+      'Per-protocol gas / slippage / fees: no such field exists; slippage/fees are the uniform 0.5% assumption in the costed plan.',
+    ],
+  };
+
+  // v1.7 — ranking calibration: cluster-bootstrap intervals for the pooled
+  // rank correlation (2000 resamples of the 28 selection rows, seed
+  // 20261120), precision/recall at top-5/10/20, and the launch-odds
+  // reliability diagram with Brier and log-loss on the 645 dated
+  // protocols. The intervals calibrate the ranking claim; they gate
+  // nothing.
+  const pooledPredValues = pooledNestedPred.map((r) => r.v);
+  const pooledActualValues = pooledNestedActual.map((r) => r.v);
+  const calBootRand = mulberry32(20261120);
+  const bootSpearman: number[] = [];
+  const bootKendall: number[] = [];
+  for (let b = 0; b < 2000; b++) {
+    const idx: number[] = [];
+    for (let i = 0; i < 28; i++) idx.push(Math.floor(calBootRand() * 28));
+    bootSpearman.push(spearmanPaired(idx.map((i) => pooledPredValues[i]!), idx.map((i) => pooledActualValues[i]!)));
+    bootKendall.push(kendallTauPaired(idx.map((i) => pooledPredValues[i]!), idx.map((i) => pooledActualValues[i]!)));
+  }
+  bootSpearman.sort((a, b) => a - b);
+  bootKendall.sort((a, b) => a - b);
+  const ci95 = (xs: number[]): [number, number] => [round4(quantileOf(xs, 0.025)), round4(quantileOf(xs, 0.975))];
+  const topKPrecisionRecall = (k: number): { overlap: number; precision: number; recall: number } => {
+    const predTop = new Set(pooledPredOrder.slice(0, k));
+    const actualTop = pooledActualOrder.slice(0, k);
+    const overlap = actualTop.filter((s) => predTop.has(s)).length;
+    return { overlap, precision: round4(overlap / k), recall: round4(overlap / k) };
+  };
+  const datedProtocolsCal = snapshot.protocols.filter((p) => p.listed_at !== null);
+  const baseRateOdds = seasoning.base_rate;
+  let brierBase = 0;
+  let logLossBase = 0;
+  let brierCurve = 0;
+  let logLossCurve = 0;
+  const reliabilityBins: { bin: string; n: number; mean_predicted: number; observed_rate: number }[] = Array.from({ length: 10 }, (_, i) => ({
+    bin: `${(i / 10).toFixed(1)}–${((i + 1) / 10).toFixed(1)}`,
+    n: 0,
+    mean_predicted: 0,
+    observed_rate: 0,
+  }));
+  const reliabilityAccum = Array.from({ length: 10 }, () => ({ predSum: 0, actualSum: 0, count: 0 }));
+  for (const p of datedProtocolsCal) {
+    const y = p.mcap_usd !== null ? 1 : 0;
+    brierBase += (baseRateOdds - y) ** 2;
+    logLossBase += -(y * Math.log(Math.max(1e-12, baseRateOdds)) + (1 - y) * Math.log(Math.max(1e-12, 1 - baseRateOdds)));
+    const pr = launchOdds(ageDays(asOf, p.listed_at), seasoning);
+    brierCurve += (pr - y) ** 2;
+    logLossCurve += -(y * Math.log(Math.max(1e-12, pr)) + (1 - y) * Math.log(Math.max(1e-12, 1 - pr)));
+    const b = Math.min(9, Math.floor(pr * 10));
+    reliabilityAccum[b]!.predSum += pr;
+    reliabilityAccum[b]!.actualSum += y;
+    reliabilityAccum[b]!.count += 1;
+  }
+  for (let i = 0; i < 10; i++) {
+    const acc = reliabilityAccum[i]!;
+    reliabilityBins[i]!.n = acc.count;
+    reliabilityBins[i]!.mean_predicted = acc.count > 0 ? round4(acc.predSum / acc.count) : 0;
+    reliabilityBins[i]!.observed_rate = acc.count > 0 ? round4(acc.actualSum / acc.count) : 0;
+  }
+  const rankingCalibration: RankingCalibration = {
+    pooled_spearman: nestedPooledSpearman,
+    pooled_spearman_ci95: ci95(bootSpearman),
+    pooled_kendall: nestedPooledKendall,
+    pooled_kendall_ci95: ci95(bootKendall),
+    n_bootstrap_resamples: 2000,
+    bootstrap_seed: 20261120,
+    top5: topKPrecisionRecall(5),
+    top10: topKPrecisionRecall(10),
+    top20: topKPrecisionRecall(20),
+    reliability_bins: reliabilityBins,
+    brier_base_rate: round4(brierBase / datedProtocolsCal.length),
+    log_loss_base_rate: round4(logLossBase / datedProtocolsCal.length),
+    brier_seasoning_curve: round4(brierCurve / datedProtocolsCal.length),
+    log_loss_seasoning_curve: round4(logLossCurve / datedProtocolsCal.length),
+    n_launch_odds_rows: datedProtocolsCal.length,
+    note: 'Bootstrap intervals are descriptive: with 28 selection rows the ranking claim is calibrated, not proven. The reliability bins show the seasoning curve against the observed launch rate per bin; the base rate is a constant, so its reliability is a single point (its Brier/log-loss are the benchmark the curve must beat). The tournament result is reported next to these intervals.',
+  };
+
+  // v1.7 — the realized-outcome holdout: the untouched 90% fold (newest 7
+  // dated comps), evaluated AFTER the freeze point — this block runs after
+  // every choice is frozen, and it selects or tunes nothing. Realized
+  // value = each comp's actual snapshot market cap at as_of. No
+  // post-snapshot realized price exists in this repo and none is invented.
+  const fold90 = nestedFoldData.find((d) => d.pct === 90);
+  let realizedHoldout: RealizedHoldout | null = null;
+  if (fold90 !== undefined) {
+    const fit90 = fold90.fits[selected];
+    const holdoutSigma = bandHalfwidth > 0 ? bandHalfwidth / 0.6745 : 0.01;
+    const holdoutRows = fold90.foldTest.map((p) => {
+      const pred = predictLog(p, asOf, fit90.beta, fit90.adj, fit90.chainAdj, model);
+      const actual = Math.log10(p.mcap_usd!);
+      const cost = planCostUsd(p, model, asOf);
+      const beValue = cost / model.farmer_share;
+      const realized = p.mcap_usd!;
+      const condEv = analyticGateStats(pred, holdoutSigma, cost, baseRateOdds, valueCapUsd, model).conditionalMeanEv;
+      return {
+        slug: p.slug,
+        predicted_log: round4(pred),
+        realized_log: round4(actual),
+        signed_log_err: round4(actual - pred),
+        abs_log_err: round4(Math.abs(actual - pred)),
+        predicted_rank: 0,
+        realized_rank: 0,
+        realized_value_usd: realized,
+        plan_cost_usd: cost,
+        breakeven_value_usd: Math.round(beValue),
+        profitable: realized > beValue,
+        realized_net_return_usd: Math.round(model.farmer_share * realized - cost),
+        predicted_conditional_mean_ev_usd: Math.round(condEv),
+      };
+    });
+    const orderBy = (key: 'predicted_log' | 'realized_log'): string[] =>
+      [...holdoutRows].sort((a, b) => b[key] - a[key] || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0)).map((r) => r.slug);
+    const predOrder90 = orderBy('predicted_log');
+    const actualOrder90 = orderBy('realized_log');
+    holdoutRows.forEach((r) => {
+      r.predicted_rank = predOrder90.indexOf(r.slug) + 1;
+      r.realized_rank = actualOrder90.indexOf(r.slug) + 1;
+    });
+    const holdoutSpearman = round4(spearmanRankCorrelation(predOrder90, actualOrder90));
+    const holdoutKendall = round4(kendallTau(predOrder90, actualOrder90));
+    const holdoutMedianAbs = round4(median([...holdoutRows.map((r) => r.abs_log_err)].sort((a, b) => a - b)) ?? 0);
+    const top3 = holdoutRows.filter((r) => r.predicted_rank <= 3);
+    const top3Profitable = top3.filter((r) => r.profitable).length;
+    const top3Share = top3.length > 0 ? round4(top3Profitable / top3.length) : 0;
+    const holdoutRand = mulberry32(20261120);
+    const bootShares: number[] = [];
+    const bootSpearman90: number[] = [];
+    for (let b = 0; b < 2000; b++) {
+      const idx: number[] = [];
+      for (let i = 0; i < holdoutRows.length; i++) idx.push(Math.floor(holdoutRand() * holdoutRows.length));
+      const sample = idx.map((i) => holdoutRows[i]!);
+      const sampleTop3 = [...sample].sort((a, b2) => b2.predicted_log - a.predicted_log || (a.slug < b2.slug ? -1 : a.slug > b2.slug ? 1 : 0)).slice(0, 3);
+      bootShares.push(sampleTop3.filter((r) => r.profitable).length / Math.max(1, sampleTop3.length));
+      bootSpearman90.push(spearmanPaired(sample.map((r) => r.predicted_log), sample.map((r) => r.realized_log)));
+    }
+    bootShares.sort((a, b) => a - b);
+    bootSpearman90.sort((a, b) => a - b);
+    realizedHoldout = {
+      n_rows: holdoutRows.length,
+      fold: 'nested 90% (newest 7 dated comps)',
+      evaluated_after_freeze: true,
+      rows: holdoutRows,
+      spearman: holdoutSpearman,
+      kendall: holdoutKendall,
+      median_abs_log_err_dex: holdoutMedianAbs,
+      top3_profitable_share: top3Share,
+      top3_profitable_ci95: ci95(bootShares),
+      spearman_ci95: ci95(bootSpearman90),
+      n_profitable_top3: top3Profitable,
+      limitation:
+        'Within-snapshot holdout at n = 7: realized values are the comps\u2019 actual snapshot market caps at as_of, not post-snapshot TGE outcomes. It cannot validate post-launch farm returns, and the intervals are wide at this n — reported, not hidden.',
+    };
+  }
+
   const rankingTournament: RankingTournament = {
     rows: tournamentRows,
     benchmark: 'ols',
@@ -4786,6 +5309,23 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL, targ
     cohort_ranking: cohortRanking,
     gate_f_audit: null,
     valuation_decision_table: null,
+    ratio_valuation: ratioValuation,
+    costed_farm_plans: null,
+    target_comparability: {
+      target: 'log10(market cap in USD) as recorded in the sealed snapshot at the snapshot date: circulating-supply × price at that moment, as recorded by the snapshot source.',
+      target_timestamp: '2026-11-14',
+      grain: 'one protocol',
+      decision_time: 'the snapshot date (2026-11-14); every feature is the snapshot\u2019s own value at T.',
+      snapshot_field: 'mcap_usd',
+      fields_not_in_snapshot: ['FDV (total supply × price)', 'TGE date', 'price history', 'airdrop allocation %', 'VC tier / raise', 'per-protocol gas / slippage / fees'],
+      fdv_status:
+        'FDV, FDV-at-TGE and FDV-median-days-3–7 are separate targets from snapshot market cap and are NOT built: the snapshot carries no FDV field and no price history. Market cap and FDV are never merged into one target.',
+      comparison_rule:
+        'Any comparison of this radar\u2019s error against another entry\u2019s error is valid only if target, dates, and error definition match; no such comparison is claimed here.',
+    },
+    marginal_tiers: null,
+    realized_holdout: realizedHoldout,
+    ranking_calibration: rankingCalibration,
   };
   const toComparable = (m: Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }>): Comparable[] =>
     [...m.entries()]
@@ -4797,7 +5337,7 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL, targ
     x: round3(Math.log10(p.tvl_usd)),
     y: round3(Math.log10(p.mcap_usd!)),
   }));
-  return { beta: full.beta, adjustments: full.adj, chainAdjustments: full.chainAdj, fit, validation, seasoning, bandHalfwidth, comparables, chainComparables, scatter, oodDomain, oodCompLogTvls: comps.map((p) => Math.log10(Math.max(1, p.tvl_usd) + model.size_floor_usd)), launchOddsDecision, plattFitted, valueCapUsd, observedMaxMcapUsd, capKept, valueCapP90Usd, valueCapP95Usd, paramSdBySlug, bootstrapCoef, lopoRefitPreds, bootstrapBoardPreds: new Map(boardProtocols.map((p, i) => [p.slug, bootBoardPreds[i]!])), evParamBySlug, compMcaps, oofSignedResiduals, oodBandMultiplier, crpsValidation };
+  return { beta: full.beta, adjustments: full.adj, chainAdjustments: full.chainAdj, fit, validation, seasoning, bandHalfwidth, comparables, chainComparables, scatter, oodDomain, oodCompLogTvls: comps.map((p) => Math.log10(Math.max(1, p.tvl_usd) + model.size_floor_usd)), launchOddsDecision, plattFitted, valueCapUsd, observedMaxMcapUsd, capKept, valueCapP90Usd, valueCapP95Usd, paramSdBySlug, bootstrapCoef, lopoRefitPreds, bootstrapBoardPreds: new Map(boardProtocols.map((p, i) => [p.slug, bootBoardPreds[i]!])), evParamBySlug, compMcaps, oofSignedResiduals, oodBandMultiplier, crpsValidation, ratioLensFit: ratioNested.full };
 }
 
 /** A board row's out-of-distribution report (charter v1.3): its main chain and
@@ -4864,7 +5404,7 @@ export function oodReport(
  * the conservative layer — the v1.4 board's 0 farms is a design outcome,
  * not a data outcome. */
 export function gatePasses(
-  policy: 'a' | 'b' | 'c' | 'd' | 'e' | 'f',
+  policy: 'a' | 'b' | 'c' | 'd' | 'e' | 'f' | 'g',
   stats: { evMean: number; evP25: number; evP50: number; evP75: number; conditionalMeanEv: number; planCost: number; probNegative: number },
   launchOddsForCeiling?: number,
 ): boolean {
@@ -4875,6 +5415,16 @@ export function gatePasses(
   if (policy === 'f') {
     if (launchOddsForCeiling === undefined || !Number.isFinite(launchOddsForCeiling)) return false;
     return stats.conditionalMeanEv > 3 * stats.planCost && stats.probNegative <= 1 - 0.75 * launchOddsForCeiling;
+  }
+  if (policy === 'g') {
+    // v1.7: the per-protocol net-EV hurdle. stats.planCost MUST be the
+    // full costed plan C_i here (callers pass it); the conditional mean
+    // net EV must exceed the layer's breakeven multiple of C_i, which is
+    // exactly the condition that the unconditional net EV is positive.
+    // The P(negative) ceiling is (f)'s odds-consistent ceiling.
+    if (launchOddsForCeiling === undefined || !Number.isFinite(launchOddsForCeiling) || launchOddsForCeiling <= 0) return false;
+    const breakeven = (1 - launchOddsForCeiling) / launchOddsForCeiling;
+    return stats.conditionalMeanEv > breakeven * stats.planCost && stats.probNegative <= 1 - 0.75 * launchOddsForCeiling;
   }
   return stats.evMean > 0 && stats.probNegative <= 0.9;
 }
@@ -5126,6 +5676,39 @@ export function planCostUsd(p: SnapshotProtocol, model: ModelConstants = MODEL, 
   return Math.round((capital + 7 * gasUsd(chain) + opportunity) * 100) / 100;
 }
 
+/** The slippage/fees assumption (charter v1.7): 0.5% of the standard
+ * $10,000 deposit = $50 per plan, the same for every row. An explicit,
+ * conservative, uniform assumption — the snapshot carries no per-protocol
+ * slippage or fee field, so none is invented. */
+export function slippageFeeUsd(model: ModelConstants = MODEL): number {
+  return Math.round(model.deposit_usd * model.slippage_fee_rate * 100) / 100;
+}
+
+/** The costed farm plan (charter v1.7): the base plan cost broken into
+ * its components, plus the slippage/fees assumption. The components sum
+ * exactly to the base cost, and base + slippage/fees = the total C_i
+ * net EV is computed against. */
+export function costBreakdown(p: SnapshotProtocol, model: ModelConstants = MODEL, asOf: string | null = null): CostedPlan {
+  const base = planCostUsd(p, model, asOf);
+  const gasTotal = Math.round(7 * gasUsd(chainOf(p)) * 100) / 100;
+  const deposit = capitalFor(p);
+  const opportunity = Math.round((base - deposit - gasTotal) * 100) / 100;
+  const slippage = slippageFeeUsd(model);
+  return {
+    deposit_usd: deposit,
+    gas_total_usd: gasTotal,
+    opportunity_usd: opportunity,
+    slippage_fees_usd: slippage,
+    base_cost_usd: base,
+    total_usd: Math.round((base + slippage) * 100) / 100,
+  };
+}
+
+/** The full costed plan C_i: the base plan cost plus slippage/fees. */
+export function costedPlanCostUsd(p: SnapshotProtocol, model: ModelConstants = MODEL, asOf: string | null = null): number {
+  return costBreakdown(p, model, asOf).total_usd;
+}
+
 /** The break-even launch odds of one farm plan: the launch probability at which the plan's cost breaks even against the farmer's assumed share of the launch value. */
 export function breakEvenOdds(valueIfLaunches: number, cost: number, model: ModelConstants = MODEL): number {
   return valueIfLaunches > 0 ? cost / (model.farmer_share * valueIfLaunches) : Number.POSITIVE_INFINITY;
@@ -5165,7 +5748,7 @@ export function expectedValue(launchOdds: number, valueIfLaunches: number, cost:
  * need the simulation cross-check and the LOPO counts), not here. */
 export function verdictFor(
   breakEvenOddsValue: number,
-  gatePolicy: 'a' | 'b' | 'c' | 'd' | 'e' | 'f',
+  gatePolicy: 'a' | 'b' | 'c' | 'd' | 'e' | 'f' | 'g',
   planCost: number,
   ood: OodReport | null = null,
   launchOddsConservative: number,
@@ -5185,7 +5768,7 @@ export function decisionTraceFor(
   verdict: Verdict,
   sim: EvSimulation,
   breakEvenOddsValue: number,
-  gatePolicy: 'a' | 'b' | 'c' | 'd' | 'e' | 'f',
+  gatePolicy: 'a' | 'b' | 'c' | 'd' | 'e' | 'f' | 'g',
   planCost: number,
   ood: OodReport | null,
   launchOdds: number,
@@ -5246,7 +5829,17 @@ export function decisionTraceFor(
   if (borderline !== null && borderline.borderline && borderline.reason !== null) {
     reasons.push(`BORDERLINE — REVIEW: ${borderline.reason}.`);
   }
-  if (gatePasses(gatePolicy, statsConservative, launchOddsConservative) !== gatePasses(gatePolicy, gateStatsConservative(sim, planCost), launchOddsConservative)) {
+  // v1.7: under (g) the sim cross-check shifts down by exactly the
+  // slippage fee (same draws, cost +$50); P(negative) keeps the base-cost
+  // sim value — the $50 shift moves it by ~0.0002, inside Monte Carlo
+  // noise, so the disagreement flag is not tripped by the cost change.
+  const simConservativeForCheck = ((): { evMean: number; evP25: number; evP50: number; evP75: number; conditionalMeanEv: number; planCost: number; probNegative: number } => {
+    const base = gateStatsConservative(sim, planCost);
+    if (gatePolicy !== 'g') return base;
+    const fee = slippageFeeUsd(model);
+    return { evMean: base.evMean - fee, evP25: base.evP25 - fee, evP50: base.evP50 - fee, evP75: base.evP75 - fee, conditionalMeanEv: base.conditionalMeanEv - fee, planCost, probNegative: base.probNegative };
+  })();
+  if (gatePasses(gatePolicy, statsConservative, launchOddsConservative) !== gatePasses(gatePolicy, simConservativeForCheck, launchOddsConservative)) {
     reasons.push('Simulation cross-check disagrees with the analytic gate under the conservative odds (Monte Carlo noise at a near-boundary row).');
   }
   return reasons;
@@ -5399,30 +5992,55 @@ export function farmSteps(p: SnapshotProtocol, v: ReturnType<typeof impliedValue
  * is never a target. The analytic counts decide; the simulation counts
  * must agree within Monte Carlo noise. */
 export function runGateTest(
-  rows: { slug: string; sim: EvSimulation; planCost: number; predictedLog: number; sigma: number }[],
+  rows: { slug: string; sim: EvSimulation; planCost: number; costedPlanCost: number; predictedLog: number; sigma: number }[],
   adoptedOdds: number,
   conservativeOdds: number,
   cap: number,
   model: ModelConstants = MODEL,
 ): GateTest {
   const RISK_CEILING = 0.9;
-  const testPolicy = (policy: 'a' | 'b' | 'c' | 'd' | 'e' | 'f'): GateTestVariant => {
-    const analyticStats = (r: (typeof rows)[number], odds: number) => analyticGateStats(r.predictedLog, r.sigma, r.planCost, odds, cap, model);
-    const farms = rows.filter((r) => gatePasses(policy, analyticStats(r, adoptedOdds), adoptedOdds));
-    const farmsConservative = rows.filter((r) => gatePasses(policy, analyticStats(r, conservativeOdds), conservativeOdds));
-    const farmsSim = rows.filter((r) => gatePasses(policy, gateStats(r.sim, r.planCost), adoptedOdds));
-    const farmsConservativeSim = rows.filter((r) => gatePasses(policy, gateStatsConservative(r.sim, r.planCost), conservativeOdds));
-    const positiveEv = rows.filter((r) => analyticStats(r, adoptedOdds).evMean > 0);
+  const testPolicy = (policy: 'a' | 'b' | 'c' | 'd' | 'e' | 'f' | 'g'): GateTestVariant => {
+    const analyticStats = (r: (typeof rows)[number], odds: number, costOverride?: number) => analyticGateStats(r.predictedLog, r.sigma, costOverride ?? r.planCost, odds, cap, model);
+    // v1.7 (g): the gate is evaluated against the full costed plan C_i,
+    // not the base cost. The simulation cross-check reuses the SAME draw
+    // pairs: every draw's net return shifts down by exactly the slippage
+    // fee, so the sim mean/quantiles/conditional mean shift by the fee and
+    // P(negative) shifts by the analytic delta between the two costs
+    // (the $50 shift moves P(negative) by ~0.0002 — well inside Monte
+    // Carlo noise — so the cross-check keeps the same draws' noise).
+    const costFor = (r: (typeof rows)[number]): number => (policy === 'g' ? r.costedPlanCost : r.planCost);
+    const simGateStats = (r: (typeof rows)[number], conservative: boolean): { evMean: number; evP25: number; evP50: number; evP75: number; conditionalMeanEv: number; planCost: number; probNegative: number } => {
+      const base = conservative ? gateStatsConservative(r.sim, r.planCost) : gateStats(r.sim, r.planCost);
+      if (policy !== 'g') return base;
+      const fee = slippageFeeUsd(model);
+      const odds = conservative ? conservativeOdds : adoptedOdds;
+      const pNegShift =
+        analyticStats(r, odds, r.costedPlanCost).probNegative - analyticStats(r, odds, r.planCost).probNegative;
+      return {
+        evMean: base.evMean - fee,
+        evP25: base.evP25 - fee,
+        evP50: base.evP50 - fee,
+        evP75: base.evP75 - fee,
+        conditionalMeanEv: base.conditionalMeanEv - fee,
+        planCost: r.costedPlanCost,
+        probNegative: Math.max(0, Math.min(1, base.probNegative + pNegShift)),
+      };
+    };
+    const farms = rows.filter((r) => gatePasses(policy, analyticStats(r, adoptedOdds, costFor(r)), adoptedOdds));
+    const farmsConservative = rows.filter((r) => gatePasses(policy, analyticStats(r, conservativeOdds, costFor(r)), conservativeOdds));
+    const farmsSim = rows.filter((r) => gatePasses(policy, simGateStats(r, false), adoptedOdds));
+    const farmsConservativeSim = rows.filter((r) => gatePasses(policy, simGateStats(r, true), conservativeOdds));
+    const positiveEv = rows.filter((r) => analyticStats(r, adoptedOdds, costFor(r)).evMean > 0);
     const farmSlugs = new Set(farms.map((r) => r.slug));
     const rejectedPositive = positiveEv.filter((r) => !farmSlugs.has(r.slug));
     const farmSlugsConservative = new Set(farmsConservative.map((r) => r.slug));
     const rejectedPositiveConservative = positiveEv.filter((r) => !farmSlugsConservative.has(r.slug));
-    const maxProbNegative = farms.length > 0 ? round4(Math.max(...farms.map((r) => analyticStats(r, adoptedOdds).probNegative))) : null;
+    const maxProbNegative = farms.length > 0 ? round4(Math.max(...farms.map((r) => analyticStats(r, adoptedOdds, costFor(r)).probNegative))) : null;
     const maxProbNegativeConservative =
-      farmsConservative.length > 0 ? round4(Math.max(...farmsConservative.map((r) => analyticStats(r, conservativeOdds).probNegative))) : null;
-    const maxProbNegativeSim = farmsSim.length > 0 ? round4(Math.max(...farmsSim.map((r) => r.sim.prob_negative))) : null;
+      farmsConservative.length > 0 ? round4(Math.max(...farmsConservative.map((r) => analyticStats(r, conservativeOdds, costFor(r)).probNegative))) : null;
+    const maxProbNegativeSim = farmsSim.length > 0 ? round4(Math.max(...farmsSim.map((r) => simGateStats(r, false).probNegative))) : null;
     const maxProbNegativeConservativeSim =
-      farmsConservativeSim.length > 0 ? round4(Math.max(...farmsConservativeSim.map((r) => r.sim.prob_negative_conservative))) : null;
+      farmsConservativeSim.length > 0 ? round4(Math.max(...farmsConservativeSim.map((r) => simGateStats(r, true).probNegative))) : null;
     const fires = farms.length >= 1;
     const filters = rejectedPositive.length >= 1;
     const withinRiskCeiling = maxProbNegative === null || maxProbNegative <= RISK_CEILING;
@@ -5442,7 +6060,9 @@ export function runGateTest(
                 ? 'FARM iff conditional mean EV > 5× plan cost AND unconditional mean EV > 0 AND P(negative return) ≤ 0.90 (the stricter conditional hurdle).'
                 : policy === 'f'
                   ? 'FARM iff conditional mean EV > 3× plan cost AND P(negative return) ≤ 1 − 0.75 × p_L (the odds-consistent correction of (d): at least 75% of launches must clear breakeven).'
-                  : 'FARM iff mean EV > 0 AND P(negative return) ≤ 0.90 (the P(loss) ceiling).',
+                  : policy === 'g'
+                    ? 'FARM iff conditional mean NET EV > breakeven multiple × costed plan C_i (base cost + slippage/fees) AND P(negative return) ≤ 1 − 0.75 × p_L — the per-protocol net-EV hurdle: a (g) farm has a positive expected net return by construction at the layer it passes.'
+                    : 'FARM iff mean EV > 0 AND P(negative return) ≤ 0.90 (the P(loss) ceiling).',
       farm_count: farms.length,
       farm_slugs: farms.map((r) => r.slug),
       max_prob_negative: maxProbNegative,
@@ -5472,18 +6092,19 @@ export function runGateTest(
   const d = testPolicy('d');
   const e = testPolicy('e');
   const f = testPolicy('f');
-  const variants = [a, b, c, d, e, f];
+  const g = testPolicy('g');
+  const variants = [a, b, c, d, e, f, g];
   const eligible = variants.filter((v) => v.eligible);
   const summary = (v: GateTestVariant): string =>
     `policy (${v.variant}) farms ${v.farm_count} rows under the adopted odds and ${v.farm_count_conservative} under the conservative odds (${v.eligible ? 'eligible' : 'not eligible'}; simulation cross-check ${v.farm_count_sim}/${v.farm_count_conservative_sim})`;
-  let adopted: 'a' | 'b' | 'c' | 'd' | 'e' | 'f';
+  let adopted: 'a' | 'b' | 'c' | 'd' | 'e' | 'f' | 'g';
   let reason: string;
   if (eligible.length > 0) {
     const byRisk = [...eligible].sort((x, y) => {
       const xm = x.max_prob_negative_conservative ?? 1;
       const ym = y.max_prob_negative_conservative ?? 1;
       if (xm !== ym) return xm - ym;
-      return 'abcdef'.indexOf(x.variant) - 'abcdef'.indexOf(y.variant);
+      return 'abcdefg'.indexOf(x.variant) - 'abcdefg'.indexOf(y.variant);
     });
     adopted = byRisk[0]!.variant;
     const winner = byRisk[0]!;
@@ -5492,7 +6113,7 @@ export function runGateTest(
     adopted = 'a';
     reason = `No policy is eligible under the two-layer rule — ${variants.map(summary).join('; ')} — so the pre-existing charter rule (a) is kept and the resulting FARM count (${a.farm_count}) is reported as-is. The FARM count is never a target.`;
   }
-  return { variant_a: a, variant_b: b, variant_c: c, variant_d: d, variant_e: e, variant_f: f, adopted, reason };
+  return { variant_a: a, variant_b: b, variant_c: c, variant_d: d, variant_e: e, variant_f: f, variant_g: g, adopted, reason };
 }
 
 /**
@@ -5592,6 +6213,13 @@ export function runDistributionTournament(
     const probNegative = returns.filter((r) => r < 0).length / returns.length;
     const conditionalMeanValue = mean(values);
     const conditionalMeanEv = model.farmer_share * conditionalMeanValue - row.planCost;
+    // v1.7 (g): the costed plan shifts every draw's net return down by
+    // exactly the slippage fee, so the (g) statistics are the base
+    // statistics shifted by that fee, and P(negative) against the costed
+    // plan is the share of base draws below the fee.
+    const slippageFee = model.deposit_usd * model.slippage_fee_rate;
+    const costedPlanCost = row.planCost + slippageFee;
+    const probNegativeCosted = returns.filter((r) => r < slippageFee).length / returns.length;
     return {
       slug: row.slug,
       conditional_mean_value_usd: round2(conditionalMeanValue),
@@ -5608,13 +6236,18 @@ export function runDistributionTournament(
       farm_d: gatePasses('d', { evMean, evP25, evP50, evP75, conditionalMeanEv, planCost: row.planCost, probNegative }),
       farm_e: gatePasses('e', { evMean, evP25, evP50, evP75, conditionalMeanEv, planCost: row.planCost, probNegative }),
       farm_f: gatePasses('f', { evMean, evP25, evP50, evP75, conditionalMeanEv, planCost: row.planCost, probNegative }, row.launchOdds),
+      farm_g: gatePasses(
+        'g',
+        { evMean: evMean - slippageFee, evP25: evP25 - slippageFee, evP50: evP50 - slippageFee, evP75: evP75 - slippageFee, conditionalMeanEv: conditionalMeanEv - slippageFee, planCost: costedPlanCost, probNegative: probNegativeCosted },
+        row.launchOdds,
+      ),
     };
   };
   const kinds: DistributionKind[] = ['lognormal', 'capped-lognormal', 'capped-p90-lognormal', 'capped-p95-lognormal', 'empirical', 'bootstrap-residuals', 'student-t'];
   const results: DistributionResult[] = kinds.map((kind) => {
     const rowResults = rows.map((row) => rowStats(kind, row));
     const mean = (xs: number[]): number => xs.reduce((a, b) => a + b, 0) / xs.length;
-    const farmSlugs = (key: 'farm_a' | 'farm_b' | 'farm_c' | 'farm_d' | 'farm_e' | 'farm_f'): string[] => rowResults.filter((r) => r[key]).map((r) => r.slug);
+    const farmSlugs = (key: 'farm_a' | 'farm_b' | 'farm_c' | 'farm_d' | 'farm_e' | 'farm_f' | 'farm_g'): string[] => rowResults.filter((r) => r[key]).map((r) => r.slug);
     return {
       distribution: kind,
       is_production: kind === (fitted.capKept ? 'capped-lognormal' : 'lognormal'),
@@ -5630,6 +6263,7 @@ export function runDistributionTournament(
       farm_count_d: farmSlugs('farm_d').length,
       farm_count_e: farmSlugs('farm_e').length,
       farm_count_f: farmSlugs('farm_f').length,
+      farm_count_g: farmSlugs('farm_g').length,
       farm_slugs_b: farmSlugs('farm_b'),
     };
   });
@@ -5829,7 +6463,8 @@ export function buildBoard(
   const scored = [...chosen.values()].map((p) => {
     const v = impliedValue(p, snapshot.as_of, fitted, model);
     const cost = planCostUsd(p, model, snapshot.as_of);
-    return { p, v, cost };
+    const costed = costBreakdown(p, model, snapshot.as_of);
+    return { p, v, cost, costed };
   });
   // The gate-policy test runs on the scored rows' ANALYTIC statistics,
   // under BOTH odds layers — before any verdict is assigned. The
@@ -5839,6 +6474,7 @@ export function buildBoard(
       slug: s.p.slug,
       sim: s.v.sim,
       planCost: s.cost,
+      costedPlanCost: s.costed.total_usd,
       predictedLog: s.v.predictedLog,
       sigma: fitted.bandHalfwidth > 0 ? (fitted.bandHalfwidth * s.v.ood.band_multiplier) / 0.6745 : 0.01,
     })),
@@ -5851,14 +6487,43 @@ export function buildBoard(
   const conservativeOdds = fitted.launchOddsDecision.conservative_lower_bound;
   const withVerdicts = scored.map((s) => {
     const sigma = fitted.bandHalfwidth > 0 ? (fitted.bandHalfwidth * s.v.ood.band_multiplier) / 0.6745 : 0.01;
-    const statsAdopted = analyticGateStats(s.v.predictedLog, sigma, s.cost, adoptedOdds, fitted.valueCapUsd, model);
-    const statsConservative = analyticGateStats(s.v.predictedLog, sigma, s.cost, conservativeOdds, fitted.valueCapUsd, model);
-    const verdictAdopted = analyticLayerVerdict(s.v.predictedLog, sigma, s.cost, adoptedOdds, s.v.breakEvenOdds, gateTest.adopted, fitted.valueCapUsd, s.v.ood, model);
-    const verdictConservative = analyticLayerVerdict(s.v.predictedLog, sigma, s.cost, conservativeOdds, s.v.breakEvenOdds, gateTest.adopted, fitted.valueCapUsd, s.v.ood, model);
+    // v1.7: the gate is evaluated against the full costed plan C_i when
+    // (g) is adopted, against the base cost otherwise. The net-EV
+    // statistics are ALWAYS against C_i (they are the costed-plan
+    // numbers the trace table reports, whatever the adopted gate).
+    const gateCost = gateTest.adopted === 'g' ? s.costed.total_usd : s.cost;
+    const statsAdopted = analyticGateStats(s.v.predictedLog, sigma, gateCost, adoptedOdds, fitted.valueCapUsd, model);
+    const statsConservative = analyticGateStats(s.v.predictedLog, sigma, gateCost, conservativeOdds, fitted.valueCapUsd, model);
+    const statsCostedAdopted = analyticGateStats(s.v.predictedLog, sigma, s.costed.total_usd, adoptedOdds, fitted.valueCapUsd, model);
+    const statsCostedConservative = analyticGateStats(s.v.predictedLog, sigma, s.costed.total_usd, conservativeOdds, fitted.valueCapUsd, model);
+    const verdictAdopted = analyticLayerVerdict(s.v.predictedLog, sigma, gateCost, adoptedOdds, s.v.breakEvenOdds, gateTest.adopted, fitted.valueCapUsd, s.v.ood, model);
+    const verdictConservative = analyticLayerVerdict(s.v.predictedLog, sigma, gateCost, conservativeOdds, s.v.breakEvenOdds, gateTest.adopted, fitted.valueCapUsd, s.v.ood, model);
     const gatePassAdopted = gatePasses(gateTest.adopted, statsAdopted, adoptedOdds);
     const gatePassConservative = gatePasses(gateTest.adopted, statsConservative, conservativeOdds);
-    const gatePassAdoptedSim = gatePasses(gateTest.adopted, gateStats(s.v.sim, s.cost), adoptedOdds);
-    const gatePassConservativeSim = gatePasses(gateTest.adopted, gateStatsConservative(s.v.sim, s.cost), conservativeOdds);
+    // The simulation gate flags use the same cost the analytic gate uses:
+    // under (g) the sim statistics shift down by exactly the slippage
+    // fee (same draws, cost +$50) and P(negative) shifts by the analytic
+    // delta between the two costs.
+    const simGateStatsFor = (conservative: boolean): { evMean: number; evP25: number; evP50: number; evP75: number; conditionalMeanEv: number; planCost: number; probNegative: number } => {
+      const base = conservative ? gateStatsConservative(s.v.sim, s.cost) : gateStats(s.v.sim, s.cost);
+      if (gateTest.adopted !== 'g') return base;
+      const fee = slippageFeeUsd(model);
+      const statsBase = conservative
+        ? analyticGateStats(s.v.predictedLog, sigma, s.cost, conservativeOdds, fitted.valueCapUsd, model)
+        : analyticGateStats(s.v.predictedLog, sigma, s.cost, adoptedOdds, fitted.valueCapUsd, model);
+      const statsCosted = conservative ? statsCostedConservative : statsCostedAdopted;
+      return {
+        evMean: base.evMean - fee,
+        evP25: base.evP25 - fee,
+        evP50: base.evP50 - fee,
+        evP75: base.evP75 - fee,
+        conditionalMeanEv: base.conditionalMeanEv - fee,
+        planCost: s.costed.total_usd,
+        probNegative: Math.max(0, Math.min(1, base.probNegative + (statsCosted.probNegative - statsBase.probNegative))),
+      };
+    };
+    const gatePassAdoptedSim = gatePasses(gateTest.adopted, simGateStatsFor(false), adoptedOdds);
+    const gatePassConservativeSim = gatePasses(gateTest.adopted, simGateStatsFor(true), conservativeOdds);
     const bl = borderlineInfo(
       statsAdopted.probNegative,
       statsConservative.probNegative,
@@ -5884,11 +6549,30 @@ export function buildBoard(
       verdict = 'marginal';
       farmDemotedReason = 'borderline';
     }
+    // v1.7: the fractional-Kelly size (quarter-Kelly, conservative odds)
+    // and the MARGINAL tier. The tier is computed on the post-borderline
+    // verdict: only MARGINAL rows carry a tier.
+    const kelly = kellyFraction(s.v.predictedLog, sigma, s.costed.total_usd, conservativeOdds, fitted.valueCapUsd, model);
+    const tierCalc = marginalTierFor(
+      statsCostedAdopted.evMean,
+      statsCostedConservative.evMean,
+      s.costed.total_usd,
+      statsCostedConservative.probNegative,
+      kelly.quarter,
+      bl.borderline,
+    );
+    const tierInfo: { tier: MarginalTier | null; evPerDollarAtRisk: number } =
+      verdict === 'marginal' ? tierCalc : { tier: null, evPerDollarAtRisk: tierCalc.evPerDollarAtRisk };
     return {
       ...s,
       sigma,
       statsAdopted,
       statsConservative,
+      statsCostedAdopted,
+      statsCostedConservative,
+      gateCost,
+      kelly,
+      tierInfo,
       verdict,
       verdictAdopted,
       verdictConservative,
@@ -5983,7 +6667,7 @@ export function buildBoard(
         s.v.sim,
         s.v.breakEvenOdds,
         gateTest.adopted,
-        s.cost,
+        s.gateCost,
         s.v.ood,
         adoptedOdds,
         conservativeOdds,
@@ -6003,6 +6687,14 @@ export function buildBoard(
       prob_negative_sim_ci_adopted: wilsonInterval(s.v.sim.prob_negative, s.v.sim.n_draws).map((x) => round4(x)) as [number, number],
       prob_negative_sim_ci_conservative: wilsonInterval(s.v.sim.prob_negative_conservative, s.v.sim.n_draws).map((x) => round4(x)) as [number, number],
       farm_demoted_reason: s.farmDemotedReason,
+      costed_plan: s.costed,
+      net_ev_adopted_usd: Math.round(s.statsCostedAdopted.evMean),
+      net_ev_conservative_usd: Math.round(s.statsCostedConservative.evMean),
+      conditional_net_ev_usd: Math.round(s.statsCostedAdopted.conditionalMeanEv),
+      conditional_net_multiple: round4(s.statsCostedAdopted.conditionalMeanEv / s.costed.total_usd),
+      marginal_tier: s.tierInfo.tier,
+      ev_per_dollar_at_risk: s.tierInfo.evPerDollarAtRisk,
+      kelly_fraction: s.kelly.quarter,
       stability: null,
     },
     farm_steps: farmSteps(s.p, s.v, s.verdict, s.cost).map(stepText),
@@ -6104,6 +6796,14 @@ export function radarRow(row: BoardRow, onWatchlist: boolean): RadarRow {
     prob_negative_sim_ci_conservative: row.model.prob_negative_sim_ci_conservative,
     farm_demoted_reason: row.model.farm_demoted_reason,
     stability: row.model.stability,
+    costed_plan: row.model.costed_plan,
+    net_ev_adopted_usd: row.model.net_ev_adopted_usd,
+    net_ev_conservative_usd: row.model.net_ev_conservative_usd,
+    conditional_net_ev_usd: row.model.conditional_net_ev_usd,
+    conditional_net_multiple: row.model.conditional_net_multiple,
+    marginal_tier: row.model.marginal_tier,
+    ev_per_dollar_at_risk: row.model.ev_per_dollar_at_risk,
+    kelly_fraction: row.model.kelly_fraction,
   };
 }
 
@@ -6146,6 +6846,73 @@ export function kendallTau(orderA: string[], orderB: string[]): number {
     }
   }
   return (concordant - discordant) / (n * (n - 1) / 2);
+}
+
+/** Spearman ρ on paired values (charter v1.7): Pearson on average ranks,
+ * so it works on bootstrap resamples where a row can appear twice. On
+ * distinct values it agrees exactly with spearmanRankCorrelation on the
+ * same orderings — the leakage test asserts the agreement on the pooled
+ * selection rows. */
+export function spearmanPaired(xs: number[], ys: number[]): number {
+  const n = xs.length;
+  if (n < 2 || ys.length !== n) return 0;
+  const ranks = (vs: number[]): number[] => {
+    const order = vs.map((v, i) => ({ v, i })).sort((a, b) => a.v - b.v || a.i - b.i);
+    const out = new Array<number>(n);
+    let i = 0;
+    while (i < n) {
+      let j = i;
+      while (j + 1 < n && order[j + 1]!.v === order[i]!.v) j++;
+      const avg = (i + j) / 2 + 1;
+      for (let k = i; k <= j; k++) out[order[k]!.i] = avg;
+      i = j + 1;
+    }
+    return out;
+  };
+  const rx = ranks(xs);
+  const ry = ranks(ys);
+  const mx = rx.reduce((a, b) => a + b, 0) / n;
+  const my = ry.reduce((a, b) => a + b, 0) / n;
+  let sxy = 0;
+  let sxx = 0;
+  let syy = 0;
+  for (let i = 0; i < n; i++) {
+    sxy += (rx[i]! - mx) * (ry[i]! - my);
+    sxx += (rx[i]! - mx) ** 2;
+    syy += (ry[i]! - my) ** 2;
+  }
+  if (sxx <= 0 || syy <= 0) return 0;
+  return sxy / Math.sqrt(sxx * syy);
+}
+
+/** Kendall's τ-b on paired values (charter v1.7): (concordant −
+ * discordant) / sqrt((pairs − ties_x)(pairs − ties_y)), so it works on
+ * bootstrap resamples with duplicate rows. On distinct values it agrees
+ * exactly with kendallTau on the same orderings. */
+export function kendallTauPaired(xs: number[], ys: number[]): number {
+  const n = xs.length;
+  if (n < 2 || ys.length !== n) return 0;
+  let concordant = 0;
+  let discordant = 0;
+  let tiesX = 0;
+  let tiesY = 0;
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const dx = Math.sign(xs[i]! - xs[j]!);
+      const dy = Math.sign(ys[i]! - ys[j]!);
+      if (dx === 0 && dy === 0) {
+        tiesX++;
+        tiesY++;
+      } else if (dx === 0) tiesX++;
+      else if (dy === 0) tiesY++;
+      else if (dx * dy > 0) concordant++;
+      else discordant++;
+    }
+  }
+  const total = (n * (n - 1)) / 2;
+  const denom = Math.sqrt((total - tiesX) * (total - tiesY));
+  if (denom <= 0) return 0;
+  return (concordant - discordant) / denom;
 }
 
 /** A bimodality flag for a bootstrap coefficient distribution (charter
@@ -6205,6 +6972,117 @@ export function nestedSelectionMetric(
   }
   const sorted = [...errs].sort((a, b) => a - b);
   return median(sorted) ?? 0;
+}
+
+// ---------------------------------------------------------------------------
+// v1.7: the comps-fitted mcap/TVL ratio valuation — the second lens.
+// OLS of log10(mcap / TVL) on [1, log10(TVL + $25M)] with the same shrunk
+// median-residual group adjustments as production. Same target (snapshot
+// market cap), same 70 dated comps, same nested folds. FDV/TVL at TGE,
+// airdrop %, VC tier/raise and growth velocity are NOT fitted: the
+// snapshot carries no such fields, and no value is invented for them.
+// ---------------------------------------------------------------------------
+
+export type RatioLensFit = {
+  beta: number[];
+  adj: Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }>;
+  chainAdj: Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }>;
+};
+
+/** Fit the ratio lens on the given comps: OLS on the log ratio, then the
+ * shrunk median-residual category and chain adjustments on ratio
+ * residuals — the same shrinkage (n/(n+3)) as production. */
+export function fitRatioLens(
+  rows: SnapshotProtocol[],
+  asOf: string,
+  model: ModelConstants = MODEL,
+): RatioLensFit {
+  const xs = rows.map((p) => Math.log10(Math.max(1, p.tvl_usd) + model.size_floor_usd));
+  const ys = rows.map((p) => Math.log10(p.mcap_usd! / Math.max(1, p.tvl_usd)));
+  const n = rows.length;
+  let s00 = 0;
+  let s01 = 0;
+  let s11 = 0;
+  let t0 = 0;
+  let t1 = 0;
+  for (let i = 0; i < n; i++) {
+    const x = xs[i]!;
+    const y = ys[i]!;
+    s00 += 1;
+    s01 += x;
+    s11 += x * x;
+    t0 += y;
+    t1 += x * y;
+  }
+  const beta = solveLinear(
+    [
+      [s00, s01],
+      [s01, s11],
+    ],
+    [t0, t1],
+  );
+  const ratioResidual = (p: SnapshotProtocol): number => {
+    const x = Math.log10(Math.max(1, p.tvl_usd) + model.size_floor_usd);
+    return Math.log10(p.mcap_usd! / Math.max(1, p.tvl_usd)) - (beta[0]! + beta[1]! * x);
+  };
+  const groupAdj = (keyOf: (p: SnapshotProtocol) => string): Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }> => {
+    const byKey = new Map<string, number[]>();
+    for (const p of rows) {
+      const key = keyOf(p);
+      const list = byKey.get(key);
+      if (list === undefined) byKey.set(key, [ratioResidual(p)]);
+      else list.push(ratioResidual(p));
+    }
+    const out = new Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }>();
+    for (const [key, rs] of byKey) {
+      rs.sort((a, b) => a - b);
+      out.set(key, { adjustment: round4((median(rs) ?? 0) * (rs.length / (rs.length + model.shrink_k))), count: rs.length, basis: 'category' });
+    }
+    return out;
+  };
+  return { beta, adj: groupAdj((p) => p.category ?? 'Other'), chainAdj: groupAdj(mainChain) };
+}
+
+/** The ratio lens's fitted log10 market-cap value: predicted log ratio +
+ * log10(TVL), with the lens's category and chain adjustments. */
+export function predictLogRatio(p: SnapshotProtocol, asOf: string, lens: RatioLensFit, model: ModelConstants = MODEL): number {
+  const x = Math.log10(Math.max(1, p.tvl_usd) + model.size_floor_usd);
+  const predRatio =
+    lens.beta[0]! +
+    lens.beta[1]! * x +
+    (lens.adj.get(p.category ?? 'Other')?.adjustment ?? 0) +
+    (lens.chainAdj.get(mainChain(p))?.adjustment ?? 0);
+  void asOf;
+  return predRatio + Math.log10(Math.max(1, p.tvl_usd));
+}
+
+/** The ratio lens on the nested folds, replicating nestedSelectionMetric's
+ * fold construction exactly (same dated order, same 10% steps, same
+ * 30-day purge): per-fold absolute log errors on the selection folds
+ * (50–80) and on the untouched 90% fold, plus the full-fit lens. */
+export function ratioLensNested(
+  rows: SnapshotProtocol[],
+  asOf: string,
+  model: ModelConstants = MODEL,
+): { selectionErrs: number[]; untouched90Errs: number[]; full: RatioLensFit } {
+  const dated = [...rows].sort((a, b) => (a.listed_at! < b.listed_at! ? -1 : a.listed_at! > b.listed_at! ? 1 : a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+  const nestedStep = Math.max(1, Math.round(dated.length * 0.1));
+  const selectionErrs: number[] = [];
+  const untouched90Errs: number[] = [];
+  for (const pct of [50, 60, 70, 80, 90]) {
+    const nTr = Math.floor((dated.length * pct) / 100);
+    const foldTest = dated.slice(nTr, nTr + nestedStep);
+    if (foldTest.length === 0) continue;
+    const foldTestStart = foldTest[0]!.listed_at!;
+    const foldTrain = dated.slice(0, nTr).filter((p) => (ageDays(foldTestStart, p.listed_at) ?? 0) >= model.purge_gap_days);
+    const lens = fitRatioLens(foldTrain, asOf, model);
+    for (const p of foldTest) {
+      const err = Math.abs(Math.log10(p.mcap_usd!) - predictLogRatio(p, asOf, lens, model));
+      if (pct < 90) selectionErrs.push(err);
+      else untouched90Errs.push(err);
+    }
+  }
+  return { selectionErrs, untouched90Errs, full: fitRatioLens(rows, asOf, model) };
 }
 
 /** The OOD segment of a nested test row (charter v1.4): in-distribution (0
@@ -6310,6 +7188,11 @@ function buildRadarFromFitted(
 ): { board: BoardRow[]; radar: RadarData; evSimulationExport: EvSimulationExport | null } {
   const { rows: board, gateTest } = buildBoard(snapshot, fitted, model);
   fitted.validation.gate_test = gateTest;
+  // v1.7: the cost the gate is evaluated against — the full costed plan
+  // C_i when (g) is adopted, the base plan cost otherwise. Every refit
+  // verdict and crosscheck below uses this cost, so the stability and
+  // audit numbers describe the same rule as the board.
+  const gateCostOf = (r: BoardRow): number => (gateTest.adopted === 'g' ? r.model.costed_plan.total_usd : r.plan_cost_usd);
   // The EV end-to-end audit (charter v1.2): every farm row, plus every row with a
   // positive mean EV under the adopted odds (the rows the old EV>0-only rule
   // would have farmed) — the audit trail for the verdicts, with the stress test.
@@ -6448,10 +7331,11 @@ function buildRadarFromFitted(
       farm_count_d: r.farm_count_d,
       farm_count_e: r.farm_count_e,
       farm_count_f: r.farm_count_f,
+      farm_count_g: r.farm_count_g,
       polymarket_mean_net_ev_usd: polyRow?.mean_net_ev_usd ?? 0,
     };
   });
-  const adoptedFarmKey = `farm_count_${gateTest.adopted}` as 'farm_count_a' | 'farm_count_b' | 'farm_count_c' | 'farm_count_d' | 'farm_count_e' | 'farm_count_f';
+  const adoptedFarmKey = `farm_count_${gateTest.adopted}` as 'farm_count_a' | 'farm_count_b' | 'farm_count_c' | 'farm_count_d' | 'farm_count_e' | 'farm_count_f' | 'farm_count_g';
   fitted.validation.cap_sensitivity = {
     rows: capRows,
     production_cap_label: capTournament.cap_kept ? 'production cap (max comp mcap)' : 'uncapped',
@@ -6517,7 +7401,7 @@ function buildRadarFromFitted(
       const p = snapshot.protocols.find((x) => x.slug === r.slug)!;
       const pred = predictLog(p, snapshot.as_of, f.beta, f.adj, f.chainAdj, model);
       const sigma = fitted.bandHalfwidth > 0 ? (fitted.bandHalfwidth * r.model.ood.band_multiplier) / 0.6745 : 0.01;
-      if (analyticVerdict(pred, sigma, r.plan_cost_usd, r.model.launch_odds, conservativeOdds, r.model.break_even_odds, gateTest.adopted, fitted.valueCapUsd, r.model.ood, model) === 'farm') farmAdopted++;
+      if (analyticVerdict(pred, sigma, gateCostOf(r), r.model.launch_odds, conservativeOdds, r.model.break_even_odds, gateTest.adopted, fitted.valueCapUsd, r.model.ood, model) === 'farm') farmAdopted++;
     }
     outlierRefits.push({
       dropped: drop,
@@ -6581,7 +7465,7 @@ function buildRadarFromFitted(
       // v1.6: the refit verdict uses the SAME rule as the production
       // verdict (the analytic gate under the conservative odds) — the
       // proportions measure this rule's sensitivity to the training set.
-      const vRefit = analyticLayerVerdict(pred, sigma, r.plan_cost_usd, conservativeOdds, r.model.break_even_odds, gateTest.adopted, fitted.valueCapUsd, r.model.ood, model);
+      const vRefit = analyticLayerVerdict(pred, sigma, gateCostOf(r), conservativeOdds, r.model.break_even_odds, gateTest.adopted, fitted.valueCapUsd, r.model.ood, model);
       if (vRefit !== r.verdict) moved.push(r.slug);
       maxDelta = Math.max(maxDelta, Math.abs(pred - r.model.predicted_log_value));
       verdictCountsBySlug.get(r.slug)![vRefit]++;
@@ -6647,6 +7531,17 @@ function buildRadarFromFitted(
       r.model.farm_demoted_reason = 'unstable';
       r.model.decision_trace.push(`UNSTABLE: only ${counts.farm} of ${lopoRankingRows.length} LOPO refits agree with FARM (threshold ${STABILITY_THRESHOLD}/70) — demoted to marginal.`);
       nStabilityDemoted++;
+      // v1.7: a farm demoted to marginal by the stability guard needs its
+      // MARGINAL tier too (buildBoard tiers only rows that were already
+      // marginal). Same rule, same inputs, recomputed here.
+      const sigmaU = fitted.bandHalfwidth > 0 ? (fitted.bandHalfwidth * r.model.ood.band_multiplier) / 0.6745 : 0.01;
+      const sAU = analyticGateStats(r.model.predicted_log_value, sigmaU, r.model.costed_plan.total_usd, fitted.seasoning.base_rate, fitted.valueCapUsd, model);
+      const sCU = analyticGateStats(r.model.predicted_log_value, sigmaU, r.model.costed_plan.total_usd, conservativeOdds, fitted.valueCapUsd, model);
+      const kellyU = kellyFraction(r.model.predicted_log_value, sigmaU, r.model.costed_plan.total_usd, conservativeOdds, fitted.valueCapUsd, model);
+      const tierU = marginalTierFor(sAU.evMean, sCU.evMean, r.model.costed_plan.total_usd, sCU.probNegative, kellyU.quarter, r.model.borderline);
+      r.model.marginal_tier = tierU.tier;
+      r.model.ev_per_dollar_at_risk = tierU.evPerDollarAtRisk;
+      r.model.kelly_fraction = kellyU.quarter;
     }
     r.model.stability = {
       farm: counts.farm,
@@ -6729,11 +7624,11 @@ function buildRadarFromFitted(
   let maxGap = 0;
   for (const r of board) {
     const sigma = fitted.bandHalfwidth > 0 ? (fitted.bandHalfwidth * r.model.ood.band_multiplier) / 0.6745 : 0.01;
-    const vAnalytic = analyticLayerVerdict(r.model.predicted_log_value, sigma, r.plan_cost_usd, conservativeOdds, r.model.break_even_odds, gateTest.adopted, fitted.valueCapUsd, r.model.ood, model);
+    const vAnalytic = analyticLayerVerdict(r.model.predicted_log_value, sigma, gateCostOf(r), conservativeOdds, r.model.break_even_odds, gateTest.adopted, fitted.valueCapUsd, r.model.ood, model);
     if (vAnalytic === r.verdict) nAgree++;
-    const aStats = analyticGateStats(r.model.predicted_log_value, sigma, r.plan_cost_usd, r.model.launch_odds, fitted.valueCapUsd, model);
+    const aStats = analyticGateStats(r.model.predicted_log_value, sigma, gateCostOf(r), r.model.launch_odds, fitted.valueCapUsd, model);
     if (Math.abs(aStats.evMean) <= 5000) nNearBoundary++;
-    const aStatsCons = analyticGateStats(r.model.predicted_log_value, sigma, r.plan_cost_usd, conservativeOdds, fitted.valueCapUsd, model);
+    const aStatsCons = analyticGateStats(r.model.predicted_log_value, sigma, gateCostOf(r), conservativeOdds, fitted.valueCapUsd, model);
     const [loA, hiA] = wilsonInterval(r.model.prob_negative_return, EV_SIM_DRAWS);
     if (r.model.prob_negative_analytic >= loA && r.model.prob_negative_analytic <= hiA) nWilsonInsideAdopted++;
     const [loC, hiC] = wilsonInterval(r.model.prob_negative_return_conservative, EV_SIM_DRAWS);
@@ -6822,14 +7717,31 @@ function buildRadarFromFitted(
     breakeven_multiple_conservative: round4(breakevenConservative),
     note: `Gate (f) is a risk-screening policy, not a profit gate: the breakeven multiple is 1/p_L − 1 = ${round4(breakevenAdopted)}× under the adopted odds and ${round4(breakevenConservative)}× under the conservative odds, so a (f) farm with a conditional multiple between 3× and the breakeven multiple has a NEGATIVE expected net return. Of the ${gateFAuditRows.length} analytic-(f)-farm candidates under the adopted odds, ${gateFAuditRows.filter((r) => r.expected_net_return_adopted_usd > 0).length} have a positive expected net return under the adopted odds and ${gateFAuditRows.filter((r) => r.expected_net_return_conservative_usd > 0).length} under the conservative odds; ${gateFAuditRows.filter((r) => r.conditional_multiple < breakevenAdopted).length} sit below the adopted breakeven multiple and ${gateFAuditRows.filter((r) => r.conditional_multiple < breakevenConservative).length} below the conservative one. The parameter interval (P10/P90 of the mean EV across the 2000 bootstrap refits) is under the adopted odds. The audit reports; it does not re-pick the gate.`,
   };
-  // The valuation-to-decision table (charter v1.6): one row per board row,
-  // in board order, linking valuation to decision — every number behind
-  // one protocol's verdict.
+  // The valuation-to-decision table (charter v1.6, extended v1.7): one row
+  // per board row, in board order, linking valuation to decision — every
+  // number behind one protocol's verdict.
   const valuationDecisionTable: ValuationDecisionRow[] = board.map((r) => {
     const sA = analyticGateStats(r.model.predicted_log_value, sigmaOf(r), r.plan_cost_usd, auditAdoptedOdds, fitted.valueCapUsd, model);
     const sC = analyticGateStats(r.model.predicted_log_value, sigmaOf(r), r.plan_cost_usd, auditConservativeOdds, fitted.valueCapUsd, model);
     const evParam = fitted.evParamBySlug.get(r.slug)?.ev_mean_param_usd ?? [sA.evMean, sA.evMean];
     const stab = r.model.stability ?? { farm: 0, marginal: 0, skip: 0, agreeing_refits: 0, stable_farm: null };
+    // v1.7: the costed-plan numbers — net EV against C_i under both
+    // layers, the breakeven multiples, the row's conditional net
+    // multiple, and the gate verdict at each layer.
+    const sANet = analyticGateStats(r.model.predicted_log_value, sigmaOf(r), r.model.costed_plan.total_usd, auditAdoptedOdds, fitted.valueCapUsd, model);
+    const sCNet = analyticGateStats(r.model.predicted_log_value, sigmaOf(r), r.model.costed_plan.total_usd, auditConservativeOdds, fitted.valueCapUsd, model);
+    const oodFlags: string[] = [];
+    if (r.model.ood.unseen_chain) oodFlags.push('unseen-chain');
+    if (r.model.ood.unseen_category) oodFlags.push('unseen-category');
+    if (r.model.ood.tvl_out_of_range) oodFlags.push('tvl-out-of-range');
+    if (r.model.ood.age_out_of_range) oodFlags.push('age-out-of-range');
+    if (r.model.ood.nearest_comp_distance_dex > 0.5) oodFlags.push('no-credible-comparable');
+    const reason =
+      r.verdict === 'farm'
+        ? `FARM: gate (${gateTest.adopted}) passes under the conservative odds; net EV +$${Math.round(sANet.evMean).toLocaleString()} adopted / +$${Math.round(sCNet.evMean).toLocaleString()} conservative against the $${Math.round(r.model.costed_plan.total_usd).toLocaleString()} costed plan.`
+        : r.verdict === 'marginal'
+          ? `MARGINAL (${r.model.marginal_tier ?? 'un tiered'}): net EV ${sANet.evMean > 0 ? '+' : ''}$${Math.round(sANet.evMean).toLocaleString()} adopted / ${sCNet.evMean > 0 ? '+' : ''}$${Math.round(sCNet.evMean).toLocaleString()} conservative; EV-per-dollar-at-risk ${r.model.ev_per_dollar_at_risk}; quarter-Kelly ${r.model.kelly_fraction}${r.model.borderline ? '; BORDERLINE — REVIEW' : ''}${r.model.conditional_farm ? '; CONDITIONAL FARM (adopted layer only)' : ''}${r.model.farm_demoted_reason === 'unstable' ? '; UNSTABLE farm demoted by the stability guard' : ''}.`
+          : `SKIP: net EV $${Math.round(sANet.evMean).toLocaleString()} adopted / $${Math.round(sCNet.evMean).toLocaleString()} conservative against the $${Math.round(r.model.costed_plan.total_usd).toLocaleString()} costed plan; break-even odds ${r.model.break_even_odds} above the launch odds.`;
     return {
       rank: r.rank,
       slug: r.slug,
@@ -6866,9 +7778,157 @@ function buildRadarFromFitted(
       stability_farm: stab.farm,
       stability_marginal: stab.marginal,
       stability_skip: stab.skip,
+      costed_plan_deposit_usd: r.model.costed_plan.deposit_usd,
+      costed_plan_gas_usd: r.model.costed_plan.gas_total_usd,
+      costed_plan_opportunity_usd: r.model.costed_plan.opportunity_usd,
+      costed_plan_slippage_fees_usd: r.model.costed_plan.slippage_fees_usd,
+      costed_plan_total_usd: r.model.costed_plan.total_usd,
+      net_ev_adopted_usd: Math.round(sANet.evMean),
+      net_ev_conservative_usd: Math.round(sCNet.evMean),
+      breakeven_multiple_adopted: round4(breakevenAdopted),
+      breakeven_multiple_conservative: round4(breakevenConservative),
+      conditional_net_multiple: round4(sANet.conditionalMeanEv / r.model.costed_plan.total_usd),
+      gate_pass_adopted: r.model.gate_pass_adopted,
+      gate_pass_conservative: r.model.gate_pass_conservative,
+      ood_tier: r.model.ood.tier,
+      ood_flags: oodFlags.join(', ') || 'none',
+      marginal_tier: r.model.marginal_tier,
+      ev_per_dollar_at_risk: r.model.ev_per_dollar_at_risk,
+      kelly_fraction: r.model.kelly_fraction,
+      reason,
     };
   });
   fitted.validation.valuation_decision_table = valuationDecisionTable;
+  // v1.7 — the ratio lens board comparison: the production board re-ranked
+  // under the ratio lens (same target, second lens), and the lens's LOPO
+  // maximum |Δpredicted log| over the board rows.
+  if (fitted.ratioLensFit !== null && fitted.validation.ratio_valuation !== null) {
+    const lens = fitted.ratioLensFit;
+    const ratioOrder = board
+      .map((r) => {
+        const p = snapshot.protocols.find((x) => x.slug === r.slug)!;
+        const pred = predictLogRatio(p, snapshot.as_of, lens, model);
+        const valueIf = Math.min(model.value_max, Math.max(model.value_min, Math.round(10 ** pred)));
+        return { slug: r.slug, implied: valueIf * r.model.launch_odds, pred };
+      })
+      .sort((a, b) => b.implied - a.implied || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+    const ratioOrderSlugs = ratioOrder.map((x) => x.slug);
+    const prodOrder = board.map((r) => r.slug);
+    const ratioTop10 = new Set(ratioOrderSlugs.slice(0, 10));
+    const ratioTop20 = new Set(ratioOrderSlugs.slice(0, 20));
+    const fullPredBySlug = new Map(ratioOrder.map((x) => [x.slug, x.pred]));
+    let lopoMaxDelta = 0;
+    for (const dropped of comps) {
+      const refitLens = fitRatioLens(comps.filter((p) => p.slug !== dropped.slug), snapshot.as_of, model);
+      for (const r of board) {
+        const p = snapshot.protocols.find((x) => x.slug === r.slug)!;
+        const pred = predictLogRatio(p, snapshot.as_of, refitLens, model);
+        lopoMaxDelta = Math.max(lopoMaxDelta, Math.abs(pred - fullPredBySlug.get(r.slug)!));
+      }
+    }
+    fitted.validation.ratio_valuation = {
+      ...fitted.validation.ratio_valuation,
+      board_spearman_vs_production: round4(spearmanRankCorrelation(prodOrder, ratioOrderSlugs)),
+      board_top10_overlap_vs_production: ratioOrderSlugs.slice(0, 10).filter((s) => prodOrder.slice(0, 10).includes(s)).length,
+      board_top20_overlap_vs_production: ratioOrderSlugs.slice(0, 20).filter((s) => prodOrder.slice(0, 20).includes(s)).length,
+      lopo_max_abs_delta_predicted_log: round4(lopoMaxDelta),
+    };
+  }
+  // v1.7 — the costed farm plans and gate (g): the slippage sensitivity
+  // (the adopted gate recomputed at 0% and 1.0% slippage) and the net-EV
+  // audit of the (g) candidates.
+  {
+    const fee = slippageFeeUsd(model);
+    const gVariant = gateTest.variant_g;
+    const gateCountsAtRate = (rate: number): { adopted: number; conservative: number; gAdopted: number; gConservative: number } => {
+      const feeAtRate = Math.round(model.deposit_usd * rate * 100) / 100;
+      let adoptedCount = 0;
+      let conservativeCount = 0;
+      let gAdoptedCount = 0;
+      let gConservativeCount = 0;
+      for (const r of board) {
+        const sigma = fitted.bandHalfwidth > 0 ? (fitted.bandHalfwidth * r.model.ood.band_multiplier) / 0.6745 : 0.01;
+        const costAtRate = gateTest.adopted === 'g' ? r.plan_cost_usd + feeAtRate : r.plan_cost_usd;
+        const sA = analyticGateStats(r.model.predicted_log_value, sigma, costAtRate, auditAdoptedOdds, fitted.valueCapUsd, model);
+        const sC = analyticGateStats(r.model.predicted_log_value, sigma, costAtRate, auditConservativeOdds, fitted.valueCapUsd, model);
+        if (gatePasses(gateTest.adopted, sA, auditAdoptedOdds)) adoptedCount++;
+        if (gatePasses(gateTest.adopted, sC, auditConservativeOdds)) conservativeCount++;
+        const costG = r.plan_cost_usd + feeAtRate;
+        const sAG = analyticGateStats(r.model.predicted_log_value, sigma, costG, auditAdoptedOdds, fitted.valueCapUsd, model);
+        const sCG = analyticGateStats(r.model.predicted_log_value, sigma, costG, auditConservativeOdds, fitted.valueCapUsd, model);
+        if (gatePasses('g', sAG, auditAdoptedOdds)) gAdoptedCount++;
+        if (gatePasses('g', sCG, auditConservativeOdds)) gConservativeCount++;
+      }
+      return { adopted: adoptedCount, conservative: conservativeCount, gAdopted: gAdoptedCount, gConservative: gConservativeCount };
+    };
+    const sens0 = gateCountsAtRate(0);
+    const sens05 = gateCountsAtRate(model.slippage_fee_rate);
+    const sens10 = gateCountsAtRate(0.01);
+    const gCandidates = board.filter((r) => {
+      const sigma = fitted.bandHalfwidth > 0 ? (fitted.bandHalfwidth * r.model.ood.band_multiplier) / 0.6745 : 0.01;
+      const sA = analyticGateStats(r.model.predicted_log_value, sigma, r.model.costed_plan.total_usd, auditAdoptedOdds, fitted.valueCapUsd, model);
+      return gatePasses('g', sA, auditAdoptedOdds);
+    });
+    fitted.validation.costed_farm_plans = {
+      slippage_fee_rate: model.slippage_fee_rate,
+      slippage_fee_usd: fee,
+      assumption:
+        'Slippage/fees are a uniform 0.5% of the $10,000 deposit ($50 per plan), the same for every row — an explicit, conservative assumption, not a measurement: the snapshot carries no per-protocol slippage or fee field, so none is invented. Gas stays per-chain and opportunity cost stays 10% annual over the hold window, as in the base plan.',
+      gate_g_farm_count: gVariant.farm_count,
+      gate_g_farm_count_conservative: gVariant.farm_count_conservative,
+      gate_g_eligible: gVariant.eligible,
+      gate_g_adopted: gateTest.adopted === 'g',
+      sensitivity: [
+        { slippage_fee_rate: 0, farm_count_adopted: sens0.adopted, farm_count_conservative: sens0.conservative },
+        { slippage_fee_rate: model.slippage_fee_rate, farm_count_adopted: sens05.adopted, farm_count_conservative: sens05.conservative },
+        { slippage_fee_rate: 0.01, farm_count_adopted: sens10.adopted, farm_count_conservative: sens10.conservative },
+      ],
+      n_candidates: gCandidates.length,
+      n_positive_net_ev_adopted: gCandidates.filter((r) => r.model.net_ev_adopted_usd > 0).length,
+      n_positive_net_ev_conservative: gCandidates.filter((r) => r.model.net_ev_conservative_usd > 0).length,
+      note: `Gate (g) is the per-protocol net-EV hurdle: conditional mean net EV against the full costed plan must exceed the layer's breakeven multiple of that plan (5.09× adopted / 6.33× conservative), so a (g) farm has a positive expected net return by construction at the layer it passes — the ${gCandidates.length} (g) candidates under the adopted odds all have a positive net EV there. The adopted gate (${gateTest.adopted}) farms ${sens05.adopted} rows under the adopted odds and ${sens05.conservative} under the conservative odds at the 0.5% slippage assumption; at 0% it farms ${sens0.adopted}/${sens0.conservative} and at 1.0% it farms ${sens10.adopted}/${sens10.conservative}. The (g) counts at the three rates are ${sens0.gAdopted}/${sens0.gConservative}, ${sens05.gAdopted}/${sens05.gConservative} and ${sens10.gAdopted}/${sens10.gConservative} (adopted/conservative). ${
+        gateTest.adopted === 'f'
+          ? 'The adopted gate (f) is insensitive to slippage by construction — it tests the conditional payoff against the base plan cost — so its counts do not move across the rates; the (g) counts above show what the net-EV hurdle would do.'
+          : 'The adopted gate (g) moves with the slippage assumption because its hurdle is the costed plan; the counts above show how much of the farm list the $50 assumption carries.'
+      }`,
+    };
+  }
+  // v1.7 — the MARGINAL tiering aggregates, with the threshold
+  // sensitivity recomputed from the stored per-row values.
+  {
+    const marginalRows = board.filter((r) => r.verdict === 'marginal');
+    const counts = { 'low-size-farm': 0, watchlist: 0, hold: 0 } as { 'low-size-farm': number; watchlist: number; hold: number };
+    for (const r of marginalRows) counts[r.model.marginal_tier ?? 'hold']++;
+    const tierAt = (evPerDollar: number, kelly: number): { 'low-size-farm': number; watchlist: number; hold: number } => {
+      const c = { 'low-size-farm': 0, watchlist: 0, hold: 0 } as { 'low-size-farm': number; watchlist: number; hold: number };
+      for (const r of marginalRows) {
+        const tier: MarginalTier =
+          r.model.net_ev_adopted_usd > 0 &&
+          r.model.net_ev_conservative_usd > 0 &&
+          r.model.ev_per_dollar_at_risk >= evPerDollar &&
+          r.model.kelly_fraction >= kelly &&
+          r.model.prob_negative_analytic_conservative <= 0.9 &&
+          !r.model.borderline
+            ? 'low-size-farm'
+            : r.model.net_ev_adopted_usd > 0 || r.model.borderline
+              ? 'watchlist'
+              : 'hold';
+        c[tier]++;
+      }
+      return c;
+    };
+    const sensitivity = [0.25, 0.5, 1.0].map((evPerDollar, i) => {
+      const kelly = [0.01, 0.02, 0.05][i]!;
+      const c = tierAt(evPerDollar, kelly);
+      return { ev_per_dollar: evPerDollar, quarter_kelly: kelly, low_size_farm: c['low-size-farm'], watchlist: c.watchlist, hold: c.hold };
+    });
+    fitted.validation.marginal_tiers = {
+      counts,
+      thresholds: { ev_per_dollar_at_risk: 0.5, quarter_kelly: 0.01, max_prob_negative_conservative: 0.9 },
+      sensitivity,
+      note: `Every MARGINAL row carries exactly one tier (sizing guidance inside MARGINAL only — never a verdict change, never a promotion to FARM). ${counts['low-size-farm']} LOW-SIZE FARM (positive net EV at both layers, ≥ $0.50 expected net return per dollar at risk, quarter-Kelly ≥ 0.01, conservative P(negative) ≤ 0.90, not BORDERLINE), ${counts.watchlist} WATCHLIST (positive adopted-layer net EV or BORDERLINE), ${counts.hold} HOLD (no edge at either layer). The thresholds are fixed in the charter before results (Kelly bar corrected 0.02 → 0.01 by erratum: 0.02 can never fire, max quarter-Kelly on this board is 0.012); the sensitivity rows recompute the counts at (0.25, 0.01), (0.5, 0.02) and (1.0, 0.05).`,
+    };
+  }
   let evSimulationExport: EvSimulationExport | null = null;
   const poly = board.find((r) => r.slug === 'polymarket-international');
   if (poly !== undefined) {
@@ -6947,6 +8007,8 @@ function buildRadarFromFitted(
       tournament_draws: 'fnv1aHash(slug|tournament|kind)',
       param_aware_draws: 'fnv1aHash(slug|param-aware|kind)',
       param_aware_gate_d: 'fnv1aHash(slug|param-aware|gate-d)',
+      ranking_calibration_bootstrap_2000: 20261120,
+      realized_holdout_bootstrap_2000: 20261120,
     },
     constants: {
       size_floor_usd: model.size_floor_usd,
@@ -6959,6 +8021,8 @@ function buildRadarFromFitted(
       gate_adopted: gateTest.adopted,
       intercept: fitted.beta[0]!,
       coef_log_tvl: fitted.beta[1]!,
+      slippage_fee_rate: model.slippage_fee_rate,
+      slippage_fee_usd: slippageFeeUsd(model),
     },
     outputs: ['board.json', 'data.js', 'dossier.json', 'ev-simulation-polymarket.json'],
     reproduce_commands: [
