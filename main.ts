@@ -1,4 +1,4 @@
-// Token Radar's entrypoint (radar-9, Node 22, standard library only).
+// Token Radar's entrypoint (radar-10, Node 22, standard library only).
 //
 // Reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), scores every
 // pre-token protocol with the Huber-fitted log-log regression in lib/model.ts, writes the ranked
@@ -61,7 +61,7 @@ if (issue !== null) {
 mkdirSync(out, { recursive: true });
 writeFileSync(join(out, 'board.json'), `${JSON.stringify({ rows: board })}\n`);
 writeFileSync(join(out, 'data.js'), dataScript(radar));
-// The raw Polymarket EV simulation output (charter v1.2): the full seeded draw
+// The raw Polymarket EV simulation output (charter v1.3): the full seeded draw
 // array, so the P25-EV vs P(negative) contradiction the audit found can be
 // checked draw by draw. Deterministic: the same seed always draws the same array.
 if (evSimulationExport !== null) {

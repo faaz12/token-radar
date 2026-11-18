@@ -121,17 +121,20 @@ check(
   `cutoff ${cutoffDate}, ${liveComps(truncated).length} comps`,
 );
 
-// 11. Verdicts are EV-based under the charter v1.2 decision engine: a farm row passes
+// 11. Verdicts are EV-based under the charter v1.3 decision engine: a farm row passes
 //     the ADOPTED gate under the CONSERVATIVE launch odds, and no marginal row does.
 //     The farm count may legitimately be ZERO — the gate is not a quota, and this
-//     check must never require >= 1 farm. No skip row has a positive mean EV.
+//     check must never require >= 1 farm. No skip row has a positive mean EV. The
+//     P25 > 0 requirement is policy-(a)-only: under (b) a farm needs conditional mean
+//     EV > 3x plan cost, under (c) P(negative) <= 0.90 — so the farm-row check is
+//     policy-aware, never hard-coded to (a).
 const { board, radar } = buildRadar(snapshot);
 const farmRows = board.filter((r) => r.verdict === 'farm');
 const marginalRows = board.filter((r) => r.verdict === 'marginal');
 const skipRows = board.filter((r) => r.verdict === 'skip');
 check(
   'every farm row passes the adopted gate under the conservative launch odds',
-  farmRows.every((r) => r.model.gate_pass_conservative && r.model.gate_pass_adopted && r.model.expected_value_usd > 0 && r.model.ev_p25_usd > 0),
+  farmRows.every((r) => r.model.gate_pass_conservative && r.model.gate_pass_adopted && r.model.expected_value_usd > 0),
   `${farmRows.length} farm rows (0 is legitimate — the gate is not a quota)`,
 );
 check(
@@ -149,7 +152,18 @@ check(
 // equals the rows whose conservative gate passes. (The gate test is computed in
 // buildRadar, not fitModel — it needs the board.)
 const gateTest = radar.validation.gate_test;
-const adoptedVariant = gateTest.adopted === 'a' ? gateTest.variant_a : gateTest.variant_b;
+if (gateTest === null) throw new Error('gate test missing: buildRadar must set validation.gate_test');
+const adoptedVariant =
+  gateTest.adopted === 'a' ? gateTest.variant_a : gateTest.adopted === 'b' ? gateTest.variant_b : gateTest.variant_c;
+check(
+  'farm rows satisfy the adopted policy under the adopted odds',
+  gateTest.adopted === 'a'
+    ? farmRows.every((r) => r.model.ev_p25_usd > 0)
+    : gateTest.adopted === 'b'
+      ? farmRows.every((r) => r.model.ev_conditional_mean_usd > 3 * r.plan_cost_usd)
+      : farmRows.every((r) => r.model.prob_negative_return <= 0.9),
+  `adopted policy (${gateTest.adopted}), ${farmRows.length} farm rows`,
+);
 check(
   'gate-test table matches the board farms',
   adoptedVariant.farm_count === board.filter((r) => r.model.gate_pass_adopted).length &&
@@ -183,12 +197,12 @@ check(
 // 14. Model selection follows the locked rule: OLS is selected on this snapshot
 //     (ridge wins the metric by 0.0039 dex, under the 0.01 dex simplicity threshold).
 check(
-  'model selection picks OLS under the charter v1.2 rule',
+  'model selection picks OLS under the charter v1.3 rule',
   fitted.validation.model_selection.selected === 'ols',
   fitted.validation.model_selection.reason,
 );
 
-// 15. EV consistency (charter v1.2 — the radar-8 contradiction, caught here): every
+// 15. EV consistency (charter v1.3 — the radar-8 contradiction, caught here): every
 //     statistic comes from ONE simulation array per protocol, so for every board row
 //     the quantiles are monotone, P(negative) is in [0, 1] and at least the non-launch
 //     mass (1 - p_L), and the simulated P(negative) agrees with the analytic one
@@ -215,7 +229,7 @@ check(
   lowOddsBad.length === 0 ? `${board.filter((r) => r.model.launch_odds < 0.25).length} rows below 25% odds` : `violations: ${lowOddsBad.map((r) => r.slug).join(', ')}`,
 );
 
-// 16. Launch-odds decision (charter v1.2): the board uses the base rate for every row
+// 16. Launch-odds decision (charter v1.3): the board uses the base rate for every row
 //     until a better model validates — the seasoning curve is diagnostic only.
 const lod = fitted.validation.launch_odds_decision;
 check(
@@ -224,7 +238,7 @@ check(
   `source ${lod.source}, base rate ${lod.base_rate}, conservative lower bound ${lod.conservative_lower_bound}`,
 );
 
-// 17. Nested reconciliation (charter v1.2): the two nested pooled numbers reproduce
+// 17. Nested reconciliation (charter v1.3): the two nested pooled numbers reproduce
 //     exactly from the sealed snapshot, and the difference is labeled as a different
 //     test set, not a different calculation.
 check(
@@ -235,22 +249,40 @@ check(
   fitted.validation.nested_reconciliation.difference_explanation,
 );
 
-// 18. Out-of-distribution (charter v1.2): every row carries an OOD report; OOD rows
-//     get the wider band (x1.5) and the "extrapolation" confidence, never the
-//     in-distribution confidence.
+// 18. Out-of-distribution tiers (charter v1.3): every row carries an OOD report with
+//     a tier. Partial rows (1 flag) get the validated band multiplier and the
+//     "extrapolation" confidence; major rows (2+ flags, or unseen category AND unseen
+//     chain) get "unsupported" and never farm; a row whose nearest comparable is more
+//     than 0.5 dex away never farms; in-distribution rows get x1.0 and never the
+//     "extrapolation" confidence. Polymarket is the labeled exploratory extrapolation.
+const oodMult = fitted.validation.ood_multiplier_validation.adopted_multiplier;
 const oodBad = board.filter((r) => {
   const o = r.model.ood;
-  if (o.is_ood) return o.band_multiplier !== 1.5 || o.confidence !== 'extrapolation';
+  if (o.tier === 'major') return o.confidence !== 'unsupported' || r.verdict === 'farm';
+  if (o.tier === 'partial') return o.band_multiplier !== oodMult || o.confidence !== 'extrapolation';
   return o.band_multiplier !== 1 || o.confidence === 'extrapolation';
 });
 check(
-  'out-of-distribution rows are flagged with a wider band and lower confidence',
+  'out-of-distribution tiers are enforced (partial = validated multiplier + extrapolation, major = unsupported + never farm)',
   oodBad.length === 0,
-  `${board.filter((r) => r.model.ood.is_ood).length} of ${board.length} rows out-of-distribution`,
+  `${board.filter((r) => r.model.ood.is_ood).length} of ${board.length} rows out-of-distribution, validated multiplier x${oodMult}`,
+);
+const farOodBad = board.filter((r) => r.model.ood.nearest_comp_distance_dex > 0.5 && r.verdict === 'farm');
+check(
+  'no row with a nearest comparable more than 0.5 dex away farms',
+  farOodBad.length === 0,
+  `${board.filter((r) => r.model.ood.nearest_comp_distance_dex > 0.5).length} rows beyond 0.5 dex`,
+);
+const poly = board.find((r) => r.slug === 'polymarket-international')!;
+check(
+  'Polymarket is a partial-OOD exploratory extrapolation, not a production farm',
+  poly.model.ood.tier === 'partial' && poly.model.ood.confidence === 'extrapolation' && poly.verdict !== 'farm',
+  `tier ${poly.model.ood.tier}, confidence ${poly.model.ood.confidence}, verdict ${poly.verdict}`,
 );
 
-// 19. TVL floor sensitivity (charter v1.2): the diagnostic covers all five floors and
-//     the locked $25M row's selection metric equals the selection metric.
+// 19. TVL floor sensitivity (charter v1.3): the diagnostic covers all five floors and
+//     the locked $25M row's selection metric equals the selection metric. The $10M
+//     floor scores 0.3090 against $25M's 0.3203 — documented beside it, never selected.
 const floors = fitted.validation.floor_sensitivity.rows;
 check(
   'floor sensitivity covers $0M/$10M/$25M/$50M/$100M with the locked $25M metric matching selection',
@@ -259,6 +291,133 @@ check(
     Math.abs(floors.find((f) => f.floor_usd === 25_000_000)!.selection_pooled_dex - fitted.validation.nested_selection_pooled) < 1e-9,
   `${floors.length} floors, locked $25M selection pooled ${floors.find((f) => f.floor_usd === 25_000_000)?.selection_pooled_dex} dex`,
 );
+check(
+  'the $10M floor scores 0.3090 beside the locked $25M floor at 0.3203',
+  Math.abs(floors.find((f) => f.floor_usd === 10_000_000)!.selection_pooled_dex - 0.309) < 1e-9 &&
+    Math.abs(floors.find((f) => f.floor_usd === 25_000_000)!.selection_pooled_dex - 0.3203) < 1e-9,
+  `$10M ${floors.find((f) => f.floor_usd === 10_000_000)?.selection_pooled_dex} vs $25M ${floors.find((f) => f.floor_usd === 25_000_000)?.selection_pooled_dex}`,
+);
+
+// 20. Distribution tournament (charter v1.3): six distributions (five + the P90-cap
+//     sensitivity row) over the same audit rows; the capped mean is at most the
+//     uncapped mean per row; the empirical conditional means agree within Monte Carlo
+//     noise (the distribution ignores TVL, so the only spread is the per-row seed);
+//     P95 >= P90 >= median per row; farm counts per policy exist.
+const tourn = radar.validation.distribution_tournament!;
+check(
+  'distribution tournament covers six distributions over the audit rows',
+  tourn.results.length === 6 &&
+    tourn.results.map((r) => r.distribution).join(',') === 'lognormal,capped-lognormal,capped-p90-lognormal,empirical,bootstrap-residuals,student-t',
+  `${tourn.results.length} distributions, production ${tourn.production_distribution}, cap kept ${tourn.cap_kept}`,
+);
+const tournBad = tourn.results
+  .find((r) => r.distribution === 'capped-lognormal')!
+  .rows.filter((row, i) => {
+    const uncapped = tourn.results.find((r) => r.distribution === 'lognormal')!.rows[i]!;
+    return row.conditional_mean_value_usd > uncapped.conditional_mean_value_usd + 1e-6;
+  });
+check(
+  'capped lognormal mean is at most the uncapped mean on every row',
+  tournBad.length === 0,
+  `${tourn.results[0]!.n_rows} rows compared`,
+);
+const empRows = tourn.results.find((r) => r.distribution === 'empirical')!.rows;
+const empPooled = tourn.results.find((r) => r.distribution === 'empirical')!.pooled_conditional_mean_value_usd;
+check(
+  'empirical conditional means agree within Monte Carlo noise (TVL-independent)',
+  empRows.every((row) => Math.abs(row.conditional_mean_value_usd - empPooled) / empPooled <= 0.2),
+  `empirical conditional means ${Math.min(...empRows.map((r) => r.conditional_mean_value_usd)).toFixed(0)}–${Math.max(...empRows.map((r) => r.conditional_mean_value_usd)).toFixed(0)} around pooled ${empPooled}`,
+);
+const tournQuantBad = tourn.results.flatMap((r) => r.rows).filter((row) => !(row.conditional_p95_value_usd >= row.conditional_p90_value_usd && row.conditional_p90_value_usd >= row.conditional_median_value_usd));
+check(
+  'tournament quantiles are ordered P95 >= P90 >= median on every row',
+  tournQuantBad.length === 0,
+  `${tourn.results.flatMap((r) => r.rows).length} row-distributions checked`,
+);
+
+// 21. Gate policy test (charter v1.3): three policies are present; the adopted policy
+//     is eligible, or the adopted policy is (a) with a documented reason; the board's
+//     farm count equals the conservative-gate pass count under the adopted policy.
+const adoptedVariantObj = gateTest.adopted === 'a' ? gateTest.variant_a : gateTest.adopted === 'b' ? gateTest.variant_b : gateTest.variant_c;
+check(
+  'gate test covers three prespecified policies with an eligibility rule',
+  gateTest.variant_a !== undefined &&
+    gateTest.variant_b !== undefined &&
+    gateTest.variant_c !== undefined &&
+    (adoptedVariantObj.eligible || (gateTest.adopted === 'a' && gateTest.reason.length > 0)),
+  `adopted (${gateTest.adopted}): (a) ${gateTest.variant_a.farm_count}, (b) ${gateTest.variant_b.farm_count}, (c) ${gateTest.variant_c.farm_count} farms`,
+);
+check(
+  'board farm count equals the conservative-gate pass count under the adopted policy',
+  farmRows.length === board.filter((r) => r.model.gate_pass_conservative).length,
+  `${farmRows.length} farm rows`,
+);
+
+// 22. Horizon cohort (charter v1.3): status counts sum to the 645 dated protocols; the
+//     risk-set rate is launched / risk set; the censored count is the tokenless
+//     protocols listed under 12 months ago.
+const cohort = fitted.validation.horizon_cohort;
+const statusSum =
+  cohort.status_counts.launched_timing_unknown +
+  cohort.status_counts.failed +
+  cohort.status_counts.disappeared +
+  cohort.status_counts.tokenless_resolved +
+  cohort.status_counts.tokenless_censored;
+check(
+  'horizon cohort status counts sum to the dated protocols and the risk-set rate reproduces',
+  statusSum === cohort.n_dated_protocols &&
+    cohort.n_dated_protocols === 645 &&
+    Math.abs(cohort.risk_set_base_rate - Math.round((cohort.n_launched / cohort.n_risk_set) * 1e4) / 1e4) < 1e-9 &&
+    cohort.n_censored === cohort.status_counts.tokenless_censored,
+  `${statusSum} dated, risk set ${cohort.n_risk_set}, launched ${cohort.n_launched}, rate ${cohort.risk_set_base_rate} (upper bound)`,
+);
+
+// 23. Heuristic multiplier (charter v1.3): adopted only when it beats the flat base rate
+//     on BOTH Brier and log-loss on the untouched test.
+const heur = fitted.validation.seasoning_audit.heuristic_multiplier!;
+check(
+  'heuristic activity multiplier is adopted only if it beats the base rate on both Brier and log-loss',
+  !heur.adopted || (heur.beats_base_brier && heur.beats_base_log_loss),
+  `adopted ${heur.adopted}, Brier ${heur.test_brier_multiplier} vs ${heur.test_brier_base}, log-loss ${heur.test_log_loss_multiplier} vs ${heur.test_log_loss_base}`,
+);
+
+// 24. Leave-one-protocol-out influence (charter v1.3): the maximum board movement is
+//     reported; exactly 70 distinct protocols, one observation each.
+const lopo = fitted.validation.lopo_influence;
+check(
+  'LOPO covers 70 distinct protocols with one observation each and reports the maximum board movement',
+  lopo.n_protocols === 70 &&
+    lopo.observations_per_protocol === 1 &&
+    lopo.most_influential.length === 5 &&
+    Number.isFinite(lopo.max_abs_delta_predicted_log),
+  `max |Δ predicted log| ${lopo.max_abs_delta_predicted_log} dex (dropped ${lopo.most_influential[0]!.slug})`,
+);
+
+// 25. Conformal slices (charter v1.3): every coverage is in [0, 1] and every slice's
+//     counts sum to the calibration size.
+const slices = fitted.validation.conformal_slices;
+const allSlices = [...slices.by_regime, ...slices.by_tvl_band, ...slices.by_age_band, ...slices.by_ood];
+check(
+  'conformal slice coverages are in [0, 1] and slice counts sum to the calibration size',
+  allSlices.every((s) => s.coverage_50 >= 0 && s.coverage_50 <= 1 && s.coverage_80 >= 0 && s.coverage_80 <= 1 && s.coverage_90 >= 0 && s.coverage_90 <= 1) &&
+    slices.by_regime.reduce((n, s) => n + s.n, 0) === slices.calibration_n &&
+    slices.by_tvl_band.reduce((n, s) => n + s.n, 0) === slices.calibration_n &&
+    slices.by_age_band.reduce((n, s) => n + s.n, 0) === slices.calibration_n,
+  `${allSlices.length} slices, calibration n = ${slices.calibration_n}`,
+);
+
+// 26. Capped simulation (charter v1.3): no row's simulated mean value if it launches
+//     exceeds the production value cap.
+const capUsd = tourn.cap_usd;
+const capBad = board.filter((r) => r.model.mean_value_if_launches_usd > capUsd + 1e-6);
+check(
+  'no simulated mean launch value exceeds the production value cap',
+  capBad.length === 0,
+  `cap ${fmtCap(capUsd)}, ${board.length} rows checked`,
+);
+function fmtCap(n: number): string {
+  return '$' + (n / 1e9).toFixed(2) + 'B';
+}
 
 if (failures.length > 0) {
   process.stderr.write(`leakage-test: ${failures.length} check${failures.length === 1 ? '' : 's'} failed: ${failures.join(', ')}\n`);

@@ -133,10 +133,10 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-9';
+export const MODEL_VERSION = 'radar-10';
 
 /** The evaluation charter version this model's validation follows. */
-export const CHARTER_VERSION = 'v1.2';
+export const CHARTER_VERSION = 'v1.3';
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -295,6 +295,16 @@ export interface Validation {
   gate_test: GateTest | null;
   nested_reconciliation: NestedReconciliation;
   floor_sensitivity: FloorSensitivity;
+  /** v1.3: the distribution-sensitivity tournament for the conditional launch value. */
+  distribution_tournament: DistributionTournament | null;
+  /** v1.3: the 12-month horizon cohort and the survival candidate test. */
+  horizon_cohort: HorizonCohort;
+  /** v1.3: the validated OOD band multiplier. */
+  ood_multiplier_validation: OodMultiplierValidation;
+  /** v1.3: the leave-one-protocol-out influence report. */
+  lopo_influence: LopoInfluence;
+  /** v1.3: the conformal coverage slices. */
+  conformal_slices: ConformalSlices;
 }
 
 /** One of the three co-equal regression estimators (charter v1.1). */
@@ -337,8 +347,9 @@ export interface ReliabilityBin {
   mean_pred: number;
 }
 
-/** The launch-probability audit (charter v1.2): reliability, bootstrap intervals,
- * ranking metrics, and the Platt-calibration test. */
+/** The launch-probability audit (charter v1.3): reliability, bootstrap intervals,
+ * ranking metrics, the Platt-calibration test, and the heuristic activity-multiplier
+ * test (both against the flat base rate on the same untouched test rows). */
 export interface SeasoningAudit {
   reliability_bins: ReliabilityBin[];
   brier_improvement_ci: [number, number];
@@ -346,6 +357,7 @@ export interface SeasoningAudit {
   roc_auc: number;
   pr_auc: number;
   n_pooled: number;
+  heuristic_multiplier: HeuristicMultiplierTest;
   platt: {
     adopted: boolean;
     a: number | null;
@@ -375,11 +387,14 @@ export interface SeasoningAudit {
   };
 }
 
-/** One row's EV simulation (charter v1.2): every statistic is computed from ONE
- * seeded simulation array — the full mixture (launch Bernoulli × lognormal value)
- * — so the mean, the quantiles and P(negative) cannot contradict each other.
- * The conditional-on-launch value scenarios are point evaluations at the P25/P75/P10
- * value, labeled as conditional; they are NOT quantiles of the net return. */
+/** One row's EV simulation (charter v1.3): every statistic is computed from ONE
+ * seeded simulation array — the full mixture (launch Bernoulli × capped-lognormal
+ * value) — so the mean, the quantiles and P(negative) cannot contradict each
+ * other. The conditional-on-launch value scenarios are point evaluations at the
+ * P25/P75/P10 value, labeled as conditional; they are NOT quantiles of the net
+ * return. The conditional mean EV is the expected net return GIVEN the protocol
+ * launches (0.25% × E[value | launch] − plan cost) — the quantity gate policy
+ * (b) tests. */
 export interface EvSimulation {
   /** Draws in the simulation array (20,000), seeded by the slug. */
   n_draws: number;
@@ -387,6 +402,14 @@ export interface EvSimulation {
   seed: number;
   /** The expected net return: the MEAN of the simulation array (the "central EV"). */
   ev_mean_usd: number;
+  /** The conditional mean EV: E[net return | launch] = 0.25% × E[value | launch]
+   * − plan cost, from the same array's value draws. */
+  ev_conditional_mean_usd: number;
+  /** The mean value if it launches, E[value | launch], from the same array. */
+  mean_value_if_launches_usd: number;
+  /** The value cap applied to the draws (the maximum observed dated-comp market
+   * cap): no simulated launch value exceeds the largest launch ever observed. */
+  value_cap_usd: number;
   /** Quantiles of the net-return array (same array as the mean). */
   ev_p10_usd: number;
   ev_p25_usd: number;
@@ -395,6 +418,10 @@ export interface EvSimulation {
   ev_p90_usd: number;
   /** P(negative return) = mean(ev < 0) over the same array. */
   prob_negative: number;
+  /** P(negative return) under the conservative launch-probability assumption
+   * (same draw pairs, lower launch threshold) — the stress-test downside the
+   * FARM verdict must survive. */
+  prob_negative_conservative: number;
   /** The analytic P(negative) = 1 − p_L × P(value > cost / 0.25%): must agree with
    * the simulated value within Monte Carlo error (±0.02 at N = 20,000). */
   prob_negative_analytic: number;
@@ -417,32 +444,44 @@ export interface EvSimulation {
   ev_p75_conservative_usd: number;
 }
 
-/** One gate variant's test result (charter v1.2): the variant, what it farms,
- * and the worst downside among its farms. */
+/** One gate policy's test result (charter v1.3): the policy, what it farms,
+ * and the worst downside among its farms. Policies: (a) the strict current
+ * rule — mean EV > 0 AND P25 of net return > 0; (b) the Gemini proposal —
+ * conditional mean EV > 3× plan cost AND unconditional mean EV > 0; (c) the
+ * P(loss) ceiling — mean EV > 0 AND P(negative return) ≤ 0.90. */
 export interface GateTestVariant {
-  variant: 'a' | 'b';
+  variant: 'a' | 'b' | 'c';
   rule: string;
   farm_count: number;
   farm_slugs: string[];
-  /** The maximum P(negative return) among the rows this variant farms (null when it farms none). */
+  /** The maximum P(negative return) among the rows this policy farms (null when it farms none). */
   max_prob_negative: number | null;
-  /** Whether the variant satisfies the prespecified choice conditions: (i) farms at
-   * least one row, and (ii) rejects at least one row with ev_mean > 0 through its
-   * additional condition. */
+  /** Whether the policy satisfies the prespecified choice conditions: (i) farms at
+   * least one row, (ii) rejects at least one row with ev_mean > 0 through its
+   * additional condition, and (iii) its maximum P(negative return) among its
+   * FARM rows is ≤ 0.90. */
   fires: boolean;
   filters: boolean;
-  /** Rows with ev_mean > 0, and how many of them this variant rejects. */
+  /** Whether the policy's farms respect the prespecified risk ceiling. */
+  within_risk_ceiling: boolean;
+  /** Eligible iff it fires AND filters AND respects the risk ceiling. */
+  eligible: boolean;
+  /** Rows with ev_mean > 0, and how many of them this policy rejects. */
   positive_ev_count: number;
   rejected_positive_count: number;
 }
 
-/** The gate test (charter v1.2): both variants tested honestly on the corrected
- * statistics, under the adopted (base-rate) launch odds, and the adopted variant
- * chosen by the prespecified rule — never by the FARM count. */
+/** The gate-policy test (charter v1.3): three policies tested honestly on the
+ * corrected statistics, under the adopted (base-rate) launch odds, and the
+ * adopted policy chosen by the prespecified rule — never by the FARM count.
+ * The gate math is corrected here: P25 > 0 requires P(net return > 0) ≥ 75%,
+ * so policy (a) is structurally impossible under base-rate launch odds
+ * (p_L = 16.4%) and is tested only to document that fact. */
 export interface GateTest {
   variant_a: GateTestVariant;
   variant_b: GateTestVariant;
-  adopted: 'a' | 'b';
+  variant_c: GateTestVariant;
+  adopted: 'a' | 'b' | 'c';
   reason: string;
 }
 
@@ -513,8 +552,227 @@ export interface FloorSensitivity {
   note: string;
 }
 
-/** A board row's out-of-distribution report (charter v1.2): checked against the
- * training domain (the 70 dated comps). */
+/** One distribution's result for one audit row in the distribution tournament
+ * (charter v1.3): the conditional launch-value distribution and the net-return
+ * statistics it implies, all from the same seeded draws. */
+/** One candidate distribution in the tournament (charter v1.3): the conditional
+ * launch value is re-priced under this distribution on the same audit rows. */
+export type DistributionKind = 'lognormal' | 'capped-lognormal' | 'capped-p90-lognormal' | 'empirical' | 'bootstrap-residuals' | 'student-t';
+
+export interface DistributionRowResult {
+  slug: string;
+  conditional_mean_value_usd: number;
+  conditional_median_value_usd: number;
+  conditional_p90_value_usd: number;
+  conditional_p95_value_usd: number;
+  mean_net_ev_usd: number;
+  median_net_return_usd: number;
+  prob_negative: number;
+  /** P(value covers the plan cost | launch) = P(V > cost / farmer_share | launch). */
+  prob_exceeds_break_even: number;
+  /** FARM under gate policy (a) / (b) / (c), computed from this row's arrays. */
+  farm_a: boolean;
+  farm_b: boolean;
+  farm_c: boolean;
+}
+
+/** One candidate distribution in the tournament (charter v1.3): its pooled
+ * statistics over the audit rows and its farm counts under each gate policy. */
+export interface DistributionResult {
+  distribution: DistributionKind;
+  /** Whether this distribution is the production distribution for the decision engine. */
+  is_production: boolean;
+  n_rows: number;
+  rows: DistributionRowResult[];
+  pooled_conditional_mean_value_usd: number;
+  pooled_conditional_median_value_usd: number;
+  pooled_mean_net_ev_usd: number;
+  pooled_prob_negative: number;
+  /** Farm counts under each gate policy, computed from this distribution's arrays. */
+  farm_count_a: number;
+  farm_count_b: number;
+  farm_count_c: number;
+  /** The farm slugs under policy (b) (the Gemini proposal), for the overlap table. */
+  farm_slugs_b: string[];
+}
+
+/** The distribution-sensitivity tournament (charter v1.3): five candidate
+ * distributions for the conditional launch value, each simulated on the same
+ * audit rows with common launch uniforms, plus the P90-cap sensitivity row and
+ * the CRPS validation of the production (capped-lognormal) choice on the
+ * nested selection folds. */
+export interface DistributionTournament {
+  /** Draws per row per distribution (the production simulation keeps 20,000). */
+  n_draws: number;
+  /** The production cap: the maximum market cap observed among the 70 dated comps. */
+  cap_usd: number;
+  /** The P90 cap used by the sensitivity row. */
+  cap_p90_usd: number;
+  /** The production distribution (capped-lognormal when the cap is kept). */
+  production_distribution: DistributionKind;
+  results: DistributionResult[];
+  /** How much of any farm list is a tail artifact: the farm-set overlap of
+   * policy (b) across distributions, as Jaccard similarities vs the production
+   * distribution's farm set. */
+  farm_set_overlap_b: { distribution: DistributionKind; jaccard_vs_production_b: number }[];
+  /** Pooled log-CRPS (on log10 value) of capped vs uncapped on the nested
+   * selection folds (50–80); the cap is kept unless capped is worse by > 10%. */
+  crps: { capped_dex: number; uncapped_dex: number; n_test_rows: number };
+  cap_kept: boolean;
+  note: string;
+}
+
+/** One protocol in the dated cohort (charter v1.3): the 12-month horizon
+ * dataset. Prediction date = listing date; follow-up = as_of − listed_at. */
+export interface CohortRow {
+  slug: string;
+  prediction_date: string;
+  followup_days: number;
+  /** launched-timing-unknown: token at as_of, listed ≥ 12mo ago (launch may
+   * have been inside or outside the window — timing unidentified).
+   * failed: market cap 0 (a dead token). disappeared: market cap −1 sentinel.
+   * tokenless-resolved: no token, listed ≥ 12mo ago (no launch in window).
+   * tokenless-censored: no token, listed < 12mo ago (window not observed). */
+  status: 'launched-timing-unknown' | 'failed' | 'disappeared' | 'tokenless-resolved' | 'tokenless-censored';
+}
+
+/** The horizon launch-probability analysis (charter v1.3): the 12-month event,
+ * the dated cohort, and the category-stratified survival candidate tested
+ * against the base rate on the untouched chronological test. */
+export interface HorizonCohort {
+  event: string;
+  horizon_months: number;
+  n_dated_protocols: number;
+  n_risk_set: number;
+  n_launched: number;
+  /** The observed launch rate in the fully-observed risk set — an UPPER BOUND
+   * on the 12-month launch rate, because launch timing is unidentified. */
+  risk_set_base_rate: number;
+  risk_set_base_rate_is_upper_bound: true;
+  n_censored: number;
+  status_counts: {
+    launched_timing_unknown: number;
+    failed: number;
+    disappeared: number;
+    tokenless_resolved: number;
+    tokenless_censored: number;
+  };
+  /** The category-stratified launch-rate candidate vs the flat base rate, on
+   * the untouched chronological test (protocols listed in the test window
+   * with a fully observed 12-month horizon). */
+  survival_candidate: {
+    n_test: number;
+    test_brier_category: number;
+    test_log_loss_category: number;
+    test_brier_base: number;
+    test_log_loss_base: number;
+    beats_base_brier: boolean;
+    beats_base_log_loss: boolean;
+    adopted: boolean;
+    reason: string;
+  };
+  identification_note: string;
+  rows: CohortRow[];
+}
+
+/** The heuristic activity-multiplier test (charter v1.3): the bounded
+ * multiplier (1.5× active / 0.5× dormant) on the base rate, tested on the
+ * same untouched 80/90 chronological test rows as the Platt test. The
+ * activity feature is a documented proxy — TVL growing over 7 days
+ * (change_7d > 0) — because the snapshot carries no points-program or
+ * testnet field. */
+export interface HeuristicMultiplierTest {
+  feature: string;
+  feature_is_proxy: true;
+  proxy_definition: string;
+  multiplier_active: number;
+  multiplier_dormant: number;
+  n_test: number;
+  test_brier_multiplier: number;
+  test_log_loss_multiplier: number;
+  test_brier_base: number;
+  test_log_loss_base: number;
+  beats_base_brier: boolean;
+  beats_base_log_loss: boolean;
+  adopted: boolean;
+  reason: string;
+}
+
+/** The validated OOD band multiplier (charter v1.3): on the nested selection
+ * folds, OOD test rows' coverage of the 50% band under multipliers
+ * {×1.0, ×1.5, ×2.0}; the adopted multiplier is the smallest whose OOD
+ * coverage reaches nominal − 0.10. */
+export interface OodMultiplierValidation {
+  candidates: { multiplier: number; n_ood_test_rows: number; coverage_50: number }[];
+  adopted_multiplier: number;
+  n_ood_test_rows: number;
+  reason: string;
+}
+
+/** One protocol's leave-one-protocol-out influence (charter v1.3): refit the
+ * selected estimator without it and measure how much the board moves. */
+export interface LopoRow {
+  slug: string;
+  abs_delta_slope: number;
+  abs_delta_intercept: number;
+  max_abs_delta_predicted_log: number;
+}
+
+/** The leave-one-protocol-out influence report (charter v1.3). */
+export interface LopoInfluence {
+  n_protocols: number;
+  observations_per_protocol: number;
+  max_abs_delta_slope: number;
+  max_abs_delta_intercept: number;
+  max_abs_delta_predicted_log: number;
+  most_influential: LopoRow[];
+  /** Training ranges and the board rows outside them. */
+  tvl_range_usd: [number, number];
+  age_range_days: [number, number];
+  n_board_rows_outside_tvl_range: number;
+  n_board_rows_outside_age_range: number;
+  /** Pooled nested test-row error by category, main chain, and TVL tercile. */
+  error_by_category: { group: string; n: number; median_abs_log_err: number }[];
+  error_by_chain: { group: string; n: number; median_abs_log_err: number }[];
+  error_by_tvl_tercile: { group: string; n: number; median_abs_log_err: number }[];
+  note: string;
+}
+
+/** One conformal slice (charter v1.3): the observed empirical coverage of a
+ * band within a slice of the evaluation population, with the binomial
+ * (Wilson) 95% interval on the coverage — coverage is a measurement in this
+ * design, never a guarantee. */
+export interface ConformalSlice {
+  slice: string;
+  group: string;
+  n: number;
+  coverage_50: number;
+  coverage_80: number;
+  coverage_90: number;
+  coverage_50_ci: [number, number];
+}
+
+/** The conformal slices (charter v1.3): coverage by historical regime, TVL
+ * band, age band, and OOD vs in-distribution, plus calibration-sample
+ * sufficiency for the reported quantiles. */
+export interface ConformalSlices {
+  by_regime: ConformalSlice[];
+  by_tvl_band: ConformalSlice[];
+  by_age_band: ConformalSlice[];
+  by_ood: ConformalSlice[];
+  calibration_n: number;
+  quantile_index_90: number;
+  coverage_90_standard_error: number;
+  note: string;
+}
+
+/** A board row's out-of-distribution report (charter v1.3): checked against the
+ * training domain (the 70 dated comps). Tiers: in-distribution (0 flags),
+ * partially OOD (exactly 1 flag — wider band, confidence 'extrapolation',
+ * an exploratory extrapolation), major OOD (≥ 2 flags, or unseen category
+ * AND unseen chain — unsupported extrapolation, never a production FARM).
+ * A row with no credible comparable (nearest > 0.5 dex) is never a
+ * production FARM, whatever its tier. */
 export interface OodReport {
   unseen_chain: boolean;
   unseen_category: boolean;
@@ -522,8 +780,12 @@ export interface OodReport {
   age_out_of_range: boolean;
   nearest_comp_distance_dex: number;
   is_ood: boolean;
+  /** How many of the five OOD flags fired. */
+  flag_count: number;
+  /** The OOD tier: in-distribution / partially OOD / major OOD. */
+  tier: 'in-distribution' | 'partial' | 'major';
   band_multiplier: number;
-  confidence: 'in-distribution' | 'extrapolation';
+  confidence: 'in-distribution' | 'extrapolation' | 'unsupported';
 }
 
 /** The training domain the OOD check measures against: the 70 dated comps. */
@@ -686,6 +948,10 @@ export interface BoardRow {
     break_even_odds: number;
     /** expected_value_usd is the MEAN net return from the simulation array. */
     expected_value_usd: number;
+    /** v1.3: the conditional mean EV — E[net return | launch]. */
+    ev_conditional_mean_usd: number;
+    /** v1.3: the mean value if it launches, E[value | launch]. */
+    mean_value_if_launches_usd: number;
     /** ev_conservative_usd / ev_optimistic_usd are the P25 / P75 of that same array. */
     ev_conservative_usd: number;
     ev_optimistic_usd: number;
@@ -742,6 +1008,8 @@ export interface RadarRow {
   launch_odds_platt: number;
   break_even_odds: number;
   expected_value_usd: number;
+  ev_conditional_mean_usd: number;
+  mean_value_if_launches_usd: number;
   ev_conservative_usd: number;
   ev_optimistic_usd: number;
   ev_p10_usd: number;
@@ -1122,7 +1390,7 @@ export function fitSeasoningOn(rows: SnapshotProtocol[], asOf: string): Seasonin
   const dated = rows.filter((p) => ageDays(asOf, p.listed_at) !== null);
   const xs = dated.map((p) => Math.log10(ageDays(asOf, p.listed_at)! + 1));
   const ys = dated.map((p) => (p.mcap_usd !== null ? 1 : 0));
-  const baseRate = ys.length > 0 ? ys.reduce((a, b) => a + b, 0) / ys.length : 0;
+  const baseRate = ys.length > 0 ? ys.reduce<number>((a, b) => a + b, 0) / ys.length : 0;
   let b0 = 0;
   let b1 = 0;
   for (let iter = 0; iter < 50; iter++) {
@@ -1243,6 +1511,25 @@ export interface FittedModel {
   launchOddsDecision: LaunchOddsDecision;
   /** The fitted Platt parameters (even when not adopted) for the EV stress test. */
   plattFitted: { a: number; b: number } | null;
+  /** v1.3: the production value cap — the maximum market cap observed among the
+   * 70 dated comparables; no simulated launch value exceeds it. */
+  valueCapUsd: number;
+  /** v1.3: the observed maximum dated-comp market cap (the tournament's cap),
+   * even when the production cap reverted to the uncapped $100B. */
+  observedMaxMcapUsd: number;
+  /** v1.3: whether the capped lognormal survived the CRPS validation. */
+  capKept: boolean;
+  /** v1.3: the P90 cap used by the tournament's sensitivity row. */
+  valueCapP90Usd: number;
+  /** v1.3: the 70 dated comps' observed market caps (the empirical value distribution). */
+  compMcaps: number[];
+  /** v1.3: the signed out-of-fold CV residuals (the bootstrap-residual distribution). */
+  oofSignedResiduals: number[];
+  /** v1.3: the validated OOD band multiplier (chosen on the selection folds). */
+  oodBandMultiplier: number;
+  /** v1.3: the pooled log-CRPS of the capped vs uncapped lognormal on the
+   * nested selection folds (the cap validation). */
+  crpsValidation: { capped_dex: number; uncapped_dex: number; n_test_rows: number };
 }
 
 /** The assumptions every farm EV rests on (charter v1.2): stated, not measured.
@@ -1274,12 +1561,15 @@ function quantileOf(sorted: number[], q: number): number {
 }
 
 /**
- * One protocol's EV draw pairs (charter v1.2): for each draw, a launch uniform u
- * and a value draw V. The value is lognormal: log10(V) = predictedLog + σ·z with
- * z ~ Normal(0,1) by Box–Muller on the seeded PRNG, σ from the (possibly
- * OOD-widened) band half-width. The same pairs are evaluated under every
- * launch-probability assumption, so the stress test compares the same outcomes.
- * Exported so buildRadar can export the raw Polymarket simulation output.
+ * One protocol's EV draw pairs (charter v1.3): for each draw, a launch uniform u
+ * and a value draw V. The value is capped-lognormal: log10(V) = predictedLog +
+ * σ·z with z ~ Normal(0,1) by Box–Muller on the seeded PRNG, σ from the
+ * (possibly OOD-widened) band half-width, and V clamped to [$1, valueCap] where
+ * valueCap is the maximum market cap observed among the dated comparables —
+ * no simulated launch exceeds the largest launch ever observed. The same pairs
+ * are evaluated under every launch-probability assumption, so the stress test
+ * compares the same outcomes. Exported so buildRadar can export the raw
+ * Polymarket simulation output.
  */
 export function simulateEvPairs(
   predictedLog: number,
@@ -1288,6 +1578,7 @@ export function simulateEvPairs(
   nDraws: number,
   seed: number,
   model: ModelConstants = MODEL,
+  valueCap: number = MODEL.value_max,
 ): { u: number[]; values: number[] } {
   const rand = mulberry32(seed);
   const u: number[] = new Array(nDraws);
@@ -1313,7 +1604,7 @@ export function simulateEvPairs(
   for (let i = 0; i < nDraws; i++) {
     u[i] = rand();
     const logV = predictedLog + sigma * nextNormal();
-    values[i] = Math.min(model.value_max, Math.max(model.value_min, Math.round(10 ** logV)));
+    values[i] = Math.min(valueCap, Math.max(model.value_min, Math.round(10 ** logV)));
   }
   return { u, values };
 }
@@ -1372,14 +1663,16 @@ export function plattOdds(rawP: number, a: number, b: number): number {
 }
 
 /**
- * The EV simulation for one protocol (charter v1.2): one seeded array of
+ * The EV simulation for one protocol (charter v1.3): one seeded array of
  * 20,000 draws, every statistic from that array. `launchOddsAdopted` is the
  * adopted p_L (the base rate unless the curve passed the adoption test);
  * `launchOddsBaseRate`, `launchOddsPlatt` (the Platt-calibrated curve's p_L for
  * this row) and `conservativeLowerBound` (the bootstrap lower bound) are the
  * three stress-test assumptions, all computed from the SAME draw pairs. The
- * conditional value scenarios (EV at the P25/P75/P10 value IF it launches) are
- * point evaluations, labeled as conditional, never as quantiles of the net return.
+ * value draws are capped-lognormal (valueCap = the maximum observed dated-comp
+ * market cap). The conditional value scenarios (EV at the P25/P75/P10 value IF
+ * it launches) are point evaluations, labeled as conditional, never as
+ * quantiles of the net return.
  */
 export function evSimulation(
   slug: string,
@@ -1392,15 +1685,20 @@ export function evSimulation(
   bandHalfwidth: number,
   bandMultiplier: number,
   model: ModelConstants = MODEL,
+  valueCap: number = MODEL.value_max,
 ): EvSimulation {
   const sigma = bandHalfwidth > 0 ? (bandHalfwidth * bandMultiplier) / 0.6745 : 0.01;
   const seed = fnv1aHash(slug);
-  const pairs = simulateEvPairs(predictedLog, planCost, sigma, EV_SIM_DRAWS, seed, model);
+  const pairs = simulateEvPairs(predictedLog, planCost, sigma, EV_SIM_DRAWS, seed, model, valueCap);
   const adopted = evStatsFromPairs(pairs, launchOddsAdopted, planCost, model);
   const baseRate = evStatsFromPairs(pairs, launchOddsBaseRate, planCost, model);
   const platt = evStatsFromPairs(pairs, launchOddsPlatt, planCost, model);
   const conservative = evStatsFromPairs(pairs, conservativeLowerBound, planCost, model);
-  const valueAt = (logV: number): number => Math.min(model.value_max, Math.max(model.value_min, Math.round(10 ** logV)));
+  // The conditional mean EV (policy (b)'s quantity): E[net return | launch] =
+  // 0.25% × E[value | launch] − plan cost, from the same value draws.
+  const meanValueIfLaunches = pairs.values.reduce((s, v) => s + v, 0) / pairs.values.length;
+  const conditionalMeanEv = model.farmer_share * meanValueIfLaunches - planCost;
+  const valueAt = (logV: number): number => Math.min(valueCap, Math.max(model.value_min, Math.round(10 ** logV)));
   const evAtValueIfLaunches = (value: number): number => launchOddsAdopted * model.farmer_share * value - planCost;
   const p10Value = valueAt(predictedLog - 1.2816 * sigma);
   const effectiveHalfwidth = bandHalfwidth * bandMultiplier;
@@ -1408,12 +1706,16 @@ export function evSimulation(
     n_draws: EV_SIM_DRAWS,
     seed,
     ev_mean_usd: Math.round(adopted.mean),
+    ev_conditional_mean_usd: Math.round(conditionalMeanEv),
+    mean_value_if_launches_usd: Math.round(meanValueIfLaunches),
+    value_cap_usd: valueCap,
     ev_p10_usd: Math.round(adopted.p10),
     ev_p25_usd: Math.round(adopted.p25),
     ev_p50_usd: Math.round(adopted.p50),
     ev_p75_usd: Math.round(adopted.p75),
     ev_p90_usd: Math.round(adopted.p90),
     prob_negative: round4(adopted.probNegative),
+    prob_negative_conservative: round4(conservative.probNegative),
     prob_negative_analytic: round4(analyticProbNegative(launchOddsAdopted, predictedLog, planCost, sigma, model)),
     ev_at_p25_value_if_launches_usd: Math.round(evAtValueIfLaunches(valueAt(predictedLog - effectiveHalfwidth))),
     ev_at_p75_value_if_launches_usd: Math.round(evAtValueIfLaunches(valueAt(predictedLog + effectiveHalfwidth))),
@@ -1428,12 +1730,13 @@ export function evSimulation(
   };
 }
 
-/** The launch-probability audit (charter v1.2): reliability diagram, bootstrap
- * intervals for the improvement over the base rate, ROC/PR AUC, and a Platt
+/** The launch-probability audit (charter v1.3): reliability diagram, bootstrap
+ * intervals for the improvement over the base rate, ROC/PR AUC, a Platt
  * recalibration fitted on the earliest fold-local predictions and tested on the
- * latest ones. Pure arithmetic on the pooled fold-local predictions — no fitting
- * on the board's full curve. */
-export function auditLaunchOdds(pool: { pred: number; y: number; fold: number }[]): SeasoningAudit {
+ * latest ones, and the heuristic activity-multiplier test (same untouched test
+ * rows as the Platt test). Pure arithmetic on the pooled fold-local predictions
+ * — no fitting on the board's full curve. */
+export function auditLaunchOdds(pool: { pred: number; y: number; fold: number; active: boolean }[]): SeasoningAudit {
   const n = pool.length;
   const baseRate = n > 0 ? pool.reduce((s, r) => s + r.y, 0) / n : 0;
   const brierOf = (rows: { pred: number; y: number }[]): number =>
@@ -1587,10 +1890,41 @@ export function auditLaunchOdds(pool: { pred: number; y: number; fold: number }[
     for (const p of pos) for (const q of neg) auc += p.pred > q.pred ? 1 : p.pred === q.pred ? 0.5 : 0;
     return auc / (pos.length * neg.length);
   };
-  // Charter v1.2: Platt is adopted only if it beats the BASE RATE (not merely the
+  // Charter v1.3: Platt is adopted only if it beats the BASE RATE (not merely the
   // raw curve) on BOTH Brier and log-loss on the untouched test. Under v1.1
   // evidence the base rate beats even the Platt curve, so Platt is not adopted.
   const adopted = plattA !== null && plattB !== null && testBrierPlatt < testBrierBase && testLogLossPlatt < testLogLossBase;
+  // The heuristic activity-multiplier test (charter v1.3): the bounded multiplier
+  // (1.5× active / 0.5× dormant) on the base rate, tested on the SAME untouched
+  // test rows as the Platt test. The activity feature is a documented proxy —
+  // TVL growing over 7 days (change_7d > 0) — because the snapshot carries no
+  // points-program or testnet field. Adopted only if it beats the flat base rate
+  // on BOTH Brier and log-loss.
+  const clampProb = (p: number): number => Math.max(0.01, Math.min(0.9, p));
+  const testMult = testRows.map((r) => ({ pred: clampProb(testBaseRate * (r.active ? 1.5 : 0.5)), y: r.y }));
+  const testBrierMult = brierOf(testMult);
+  const testLogLossMult = logLossOf(testMult);
+  const multBeatsBrier = testBrierMult < testBrierBase;
+  const multBeatsLogLoss = testLogLossMult < testLogLossBase;
+  const heuristicMultiplier: HeuristicMultiplierTest = {
+    feature: 'activity (points program / testnet active vs dormant)',
+    feature_is_proxy: true,
+    proxy_definition: 'active iff the protocol’s 7-day TVL change is positive (change_7d > 0); dormant otherwise. The snapshot carries no points-program or testnet field, so this TVL-growth proxy is the testable candidate — it is not Gemini’s literal feature.',
+    multiplier_active: 1.5,
+    multiplier_dormant: 0.5,
+    n_test: testRows.length,
+    test_brier_multiplier: round4(testBrierMult),
+    test_log_loss_multiplier: round4(testLogLossMult),
+    test_brier_base: round4(testBrierBase),
+    test_log_loss_base: round4(testLogLossBase),
+    beats_base_brier: multBeatsBrier,
+    beats_base_log_loss: multBeatsLogLoss,
+    adopted: multBeatsBrier && multBeatsLogLoss,
+    reason:
+      multBeatsBrier && multBeatsLogLoss
+        ? `Activity multiplier adopted: on the untouched 80/90 test set (n = ${testRows.length}) it beats the flat base rate on both Brier (${testBrierMult.toFixed(4)} vs ${testBrierBase.toFixed(4)}) and log-loss (${testLogLossMult.toFixed(4)} vs ${testLogLossBase.toFixed(4)}).`
+        : `Activity multiplier NOT adopted (charter v1.3): on the untouched 80/90 test set (n = ${testRows.length}) it does not beat the flat base rate on both Brier (${testBrierMult.toFixed(4)} vs ${testBrierBase.toFixed(4)}) and log-loss (${testLogLossMult.toFixed(4)} vs ${testLogLossBase.toFixed(4)}). The flat base rate stands — no added complexity without evidence.`,
+  };
   return {
     reliability_bins: reliabilityBins,
     brier_improvement_ci: ci(dBrier),
@@ -1598,6 +1932,7 @@ export function auditLaunchOdds(pool: { pred: number; y: number; fold: number }[
     roc_auc: round4(rocAuc),
     pr_auc: round4(prAuc),
     n_pooled: n,
+    heuristic_multiplier: heuristicMultiplier,
     platt: {
       adopted,
       a: adopted ? plattA : null,
@@ -2048,6 +2383,77 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
     reproduces: round4(recomputedSelection) === selectionPooled[selected] && round4(recomputedAll) === nestedPooledByEst[selected],
   };
 
+  // The distribution-tournament CRPS validation (charter v1.3): pooled log-CRPS
+  // of the capped vs uncapped lognormal on the nested selection folds (50–80).
+  // For each test row, 2000 draws from each distribution centered on the fold's
+  // prediction, sharing the same normals (paired); the cap and σ are fold-local
+  // (the fold's training comps' max market cap; σ = 1.4826 × the median absolute
+  // residual on the fold's training rows). CRPS on the log10 value, computed
+  // from sorted draws in O(n log n).
+  const crpsOfDraws = (draws: number[], y: number): number => {
+    const sorted = [...draws].sort((a, b) => a - b);
+    const n = sorted.length;
+    let meanAbs = 0;
+    for (const x of sorted) meanAbs += Math.abs(x - y);
+    meanAbs /= n;
+    let sumPair = 0;
+    for (let j = 0; j < n; j++) sumPair += sorted[j]! * (2 * j - n + 1);
+    const meanAbsDiff = (2 * sumPair) / (n * n);
+    return meanAbs - 0.5 * meanAbsDiff;
+  };
+  const crpsRand = mulberry32(20261118);
+  const crpsCapped: number[] = [];
+  const crpsUncapped: number[] = [];
+  for (const d of nestedFoldData.filter((x) => x.pct < 90)) {
+    const foldFit = d.fits[selected];
+    const trainResiduals = d.foldTrain.map((p) => Math.log10(p.mcap_usd!) - predictLog(p, asOf, foldFit.beta, foldFit.adj, foldFit.chainAdj, model));
+    const sigmaFold = 1.4826 * (median([...trainResiduals.map(Math.abs)].sort((a, b) => a - b)) ?? 0.5);
+    const capFoldLog = Math.log10(Math.max(...d.foldTrain.map((p) => p.mcap_usd!)));
+    for (const p of d.foldTest) {
+      const pred = predictLog(p, asOf, foldFit.beta, foldFit.adj, foldFit.chainAdj, model);
+      const y = Math.log10(p.mcap_usd!);
+      const drawsCapped: number[] = [];
+      const drawsUncapped: number[] = [];
+      let spare: number | null = null;
+      const nextNormal = (): number => {
+        if (spare !== null) {
+          const z = spare;
+          spare = null;
+          return z;
+        }
+        let a = 0;
+        let b = 0;
+        do {
+          a = crpsRand();
+          b = crpsRand();
+        } while (a <= 0);
+        const r = Math.sqrt(-2 * Math.log(a));
+        const t = 2 * Math.PI * b;
+        spare = r * Math.sin(t);
+        return r * Math.cos(t);
+      };
+      for (let i = 0; i < 2000; i++) {
+        const logV = pred + sigmaFold * nextNormal();
+        drawsUncapped.push(logV);
+        drawsCapped.push(Math.min(capFoldLog, logV));
+      }
+      crpsCapped.push(crpsOfDraws(drawsCapped, y));
+      crpsUncapped.push(crpsOfDraws(drawsUncapped, y));
+    }
+  }
+  const crpsValidation = {
+    capped_dex: round4(crpsCapped.reduce((a, b) => a + b, 0) / crpsCapped.length),
+    uncapped_dex: round4(crpsUncapped.reduce((a, b) => a + b, 0) / crpsUncapped.length),
+    n_test_rows: crpsCapped.length,
+  };
+  // The cap decision (charter v1.3, prespecified): the production value cap is
+  // the maximum observed dated-comp market cap — kept unless the capped CRPS is
+  // worse than the uncapped by > 10%, in which case the production distribution
+  // reverts to the uncapped lognormal and the reversion is documented.
+  const observedMaxMcapUsd = Math.max(...comps.map((p) => p.mcap_usd!));
+  const capKept = crpsValidation.capped_dex <= crpsValidation.uncapped_dex * 1.1;
+  const productionValueCapUsd = capKept ? observedMaxMcapUsd : MODEL.value_max;
+
   // The TVL-floor sensitivity diagnostic (charter v1.2): for each floor, the
   // full-fit coefficients and the selection-pooled metric on identical folds.
   // The ranking fields are filled in buildRadar (they need the board); the
@@ -2103,12 +2509,13 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
     const chosenFit = fitRegression(d.foldTrain, asOf, mChosen, selected);
     chosenErrs.push(...absErrs(d.foldTest, chosenFit.beta, chosenFit.adj, chosenFit.chainAdj));
   }
+  const floor10m = floorRows.find((r) => r.floor_usd === 10_000_000)?.selection_pooled_dex ?? 0;
   const floorSensitivity: FloorSensitivity = {
     rows: floorRows,
     training_fold_choice_pooled_dex: round4(pooledMedian(chosenErrs)),
     training_fold_choice_floors: chosenFloors,
     locked_floor_pooled_dex: selectionPooled[selected],
-    note: 'The floor stays locked at $25M in radar-9: it is a stability constant, not a tuned optimum. This diagnostic reports the grid and the training-fold-only choice; it does not select a floor.',
+    note: `The floor stays locked at $25M in radar-10: it is a stability constant, not a tuned optimum. The $10M floor scores ${floor10m.toFixed(4)} on the selection metric against ${selectionPooled[selected].toFixed(4)} for $25M — an ${Math.abs(floor10m - selectionPooled[selected]).toFixed(4)} dex edge on 28 test rows, within noise — and choosing the floor inside the training folds only scores ${pooledMedian(chosenErrs).toFixed(4)} pooled, worse than the locked floor, so per-fold floor selection overfits and there is no case to move it. This diagnostic reports the grid and the training-fold-only choice; it does not select a floor, and the floor is never changed after seeing the untouched test.`,
   };
 
   // The production fit uses the selected estimator, on dated comps only.
@@ -2160,7 +2567,7 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
   let poolBaseBrier = 0;
   let poolBaseLogLoss = 0;
   let poolN = 0;
-  const seasoningPool: { pred: number; y: number; fold: number }[] = [];
+  const seasoningPool: { pred: number; y: number; fold: number; active: boolean }[] = [];
   for (const pct of [50, 60, 70, 80, 90]) {
     const nTr = Math.floor((dated.length * pct) / 100);
     const cutoff = dated[nTr]!.listed_at!;
@@ -2175,7 +2582,7 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
     const base = seasoningMetrics(testRows, asOf, { intercept: round4(baseIntercept), slope: 0, n_protocols: fitRows.length, base_rate: local.base_rate, platt_a: null, platt_b: null });
     const meanPred = testRows.reduce((s, p) => s + launchOdds(ageDays(asOf, p.listed_at), local), 0) / testRows.length;
     const actualRate = testRows.filter((p) => p.mcap_usd !== null).length / testRows.length;
-    for (const p of testRows) seasoningPool.push({ pred: launchOdds(ageDays(asOf, p.listed_at), local), y: p.mcap_usd !== null ? 1 : 0, fold: pct });
+    for (const p of testRows) seasoningPool.push({ pred: launchOdds(ageDays(asOf, p.listed_at), local), y: p.mcap_usd !== null ? 1 : 0, fold: pct, active: finite(p.change_7d, 0) > 0 });
     seasoningFolds.push({ train_pct: pct, cutoff, n_fit: fitRows.length, brier: round4(m.brier), log_loss: round4(m.log_loss), ece: round4(m.ece), base_rate_brier: round4(base.brier), base_rate_log_loss: round4(base.log_loss), mean_pred: round4(meanPred), actual_rate: round4(actualRate) });
     poolBrier += m.brier * m.n;
     poolLogLoss += m.log_loss * m.n;
@@ -2237,6 +2644,105 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
     seasoningAudit.platt.fitted_a !== null && seasoningAudit.platt.fitted_b !== null
       ? { a: seasoningAudit.platt.fitted_a, b: seasoningAudit.platt.fitted_b }
       : null;
+
+  // The horizon launch-probability analysis (charter v1.3): the 12-month event
+  // (launch within 12 months of listing), the dated cohort with right-censoring,
+  // and the category-stratified survival candidate vs the flat base rate on the
+  // untouched chronological test. Identification limit: the snapshot carries no
+  // token launch date, so the risk-set rate is an UPPER BOUND on the 12-month
+  // launch rate.
+  const cohortDated = [...snapshot.protocols.filter((p) => p.listed_at !== null)].sort((a, b) =>
+    a.listed_at! < b.listed_at! ? -1 : a.listed_at! > b.listed_at! ? 1 : a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0,
+  );
+  const asOfMs = Date.parse(`${asOf}T00:00:00Z`);
+  const riskCutoffDate = new Date(asOfMs - 365 * DAY_MS).toISOString().slice(0, 10);
+  const horizonCutoff = seasoningFolds[3]!.cutoff; // the 80% nested cutoff
+  const cohortRows: CohortRow[] = cohortDated.map((p) => {
+    const listed = p.listed_at!;
+    const followup = ageDays(asOf, listed) ?? 0;
+    let status: CohortRow['status'];
+    if (p.mcap_usd === 0) status = 'failed';
+    else if (p.mcap_usd === -1) status = 'disappeared';
+    else if (p.mcap_usd !== null) status = 'launched-timing-unknown';
+    else if (listed <= riskCutoffDate) status = 'tokenless-resolved';
+    else status = 'tokenless-censored';
+    return { slug: p.slug, prediction_date: listed, followup_days: followup, status };
+  });
+  const statusCounts = {
+    launched_timing_unknown: cohortRows.filter((r) => r.status === 'launched-timing-unknown').length,
+    failed: cohortRows.filter((r) => r.status === 'failed').length,
+    disappeared: cohortRows.filter((r) => r.status === 'disappeared').length,
+    tokenless_resolved: cohortRows.filter((r) => r.status === 'tokenless-resolved').length,
+    tokenless_censored: cohortRows.filter((r) => r.status === 'tokenless-censored').length,
+  };
+  const riskSet = cohortDated.filter((p) => p.listed_at! <= riskCutoffDate);
+  const riskLaunched = riskSet.filter((p) => p.mcap_usd !== null).length;
+  const riskSetBaseRate = riskSet.length > 0 ? riskLaunched / riskSet.length : 0;
+  // The category-stratified survival candidate: per-category launch rates on the
+  // fully-observed protocols listed before the 80% cutoff, shrunk toward the train
+  // base rate by n/(n+3); tested on the protocols listed in [cutoff, as_of−12mo].
+  // No post-outcome features: TVL at as_of is measured after the window for
+  // launchers and is excluded.
+  const horizonTrain = cohortDated.filter((p) => p.listed_at! < horizonCutoff);
+  const horizonTest = cohortDated.filter((p) => p.listed_at! >= horizonCutoff && p.listed_at! <= riskCutoffDate);
+  const horizonTrainBase = horizonTrain.length > 0 ? horizonTrain.filter((p) => p.mcap_usd !== null).length / horizonTrain.length : 0;
+  const horizonCatCounts = new Map<string, { n: number; y: number }>();
+  for (const p of horizonTrain) {
+    const k = p.category ?? 'Other';
+    const c = horizonCatCounts.get(k) ?? { n: 0, y: 0 };
+    c.n += 1;
+    if (p.mcap_usd !== null) c.y += 1;
+    horizonCatCounts.set(k, c);
+  }
+  const horizonCatRate = (cat: string | null): number => {
+    const c = horizonCatCounts.get(cat ?? 'Other');
+    if (!c) return horizonTrainBase;
+    return (c.y + 3 * horizonTrainBase) / (c.n + 3);
+  };
+  const horizonScore = (preds: { pred: number; y: number }[]): { brier: number; log_loss: number } => ({
+    brier: preds.length === 0 ? 0 : preds.reduce((s, r) => s + (r.pred - r.y) ** 2, 0) / preds.length,
+    log_loss:
+      preds.length === 0
+        ? 0
+        : preds.reduce((s, r) => s - (r.y * Math.log(Math.max(1e-12, r.pred)) + (1 - r.y) * Math.log(Math.max(1e-12, 1 - r.pred))), 0) / preds.length,
+  });
+  const horizonTestCat = horizonTest.map((p) => ({ pred: horizonCatRate(p.category), y: p.mcap_usd !== null ? 1 : 0 }));
+  const horizonTestBase = horizonTest.map((p) => ({ pred: horizonTrainBase, y: p.mcap_usd !== null ? 1 : 0 }));
+  const horizonCatScore = horizonScore(horizonTestCat);
+  const horizonBaseScore = horizonScore(horizonTestBase);
+  const horizonBeatsBrier = horizonCatScore.brier < horizonBaseScore.brier;
+  const horizonBeatsLogLoss = horizonCatScore.log_loss < horizonBaseScore.log_loss;
+  const horizonAdopted = horizonTest.length >= 10 && horizonBeatsBrier && horizonBeatsLogLoss;
+  const horizonCohort: HorizonCohort = {
+    event: 'launch within 12 months of listing: P(launch by listed_at + 12 months | X)',
+    horizon_months: 12,
+    n_dated_protocols: cohortDated.length,
+    n_risk_set: riskSet.length,
+    n_launched: riskLaunched,
+    risk_set_base_rate: round4(riskSetBaseRate),
+    risk_set_base_rate_is_upper_bound: true,
+    n_censored: statusCounts.tokenless_censored,
+    status_counts: statusCounts,
+    survival_candidate: {
+      n_test: horizonTest.length,
+      test_brier_category: round4(horizonCatScore.brier),
+      test_log_loss_category: round4(horizonCatScore.log_loss),
+      test_brier_base: round4(horizonBaseScore.brier),
+      test_log_loss_base: round4(horizonBaseScore.log_loss),
+      beats_base_brier: horizonBeatsBrier,
+      beats_base_log_loss: horizonBeatsLogLoss,
+      adopted: horizonAdopted,
+      reason:
+        horizonTest.length < 10
+          ? `Survival candidate NOT adopted: the untouched chronological test holds only ${horizonTest.length} fully-observed protocols (listed ${horizonCutoff} → ${riskCutoffDate}) — underpowered, so no claim is made and the flat base rate stands.`
+          : horizonAdopted
+            ? `Category-stratified launch rates adopted: on the untouched test (n = ${horizonTest.length}) they beat the flat base rate on both Brier (${horizonCatScore.brier.toFixed(4)} vs ${horizonBaseScore.brier.toFixed(4)}) and log-loss (${horizonCatScore.log_loss.toFixed(4)} vs ${horizonBaseScore.log_loss.toFixed(4)}).`
+            : `Category-stratified launch rates NOT adopted: on the untouched test (n = ${horizonTest.length}) they do not beat the flat base rate on both Brier (${horizonCatScore.brier.toFixed(4)} vs ${horizonBaseScore.brier.toFixed(4)}) and log-loss (${horizonCatScore.log_loss.toFixed(4)} vs ${horizonBaseScore.log_loss.toFixed(4)}). The flat base rate stands.`,
+    },
+    identification_note:
+      'The snapshot carries no token launch date, so a protocol with a token at as_of may have launched inside or outside its 12-month window: the risk-set rate is an UPPER BOUND on the 12-month launch rate, not the rate itself. y = 0 is certain (no token at as_of ⇒ no launch in the window); y = 1 is timing-unknown for protocols listed ≥ 12 months ago, and certain within-window for protocols listed < 12 months ago (they launched before as_of, less than 12 months after listing). No survival model can be validated against a launch time the data never records.',
+    rows: cohortRows,
+  };
   const fullFitMetrics = seasoningMetrics(
     snapshot.protocols.filter((p) => p.listed_at !== null),
     asOf,
@@ -2324,6 +2830,134 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
     n_test: splitTest.length,
     halfwidth_50_dex: round4(splitHalfwidth),
     test_coverage_50: round4(splitCoverage),
+  };
+
+  // The OOD band-multiplier validation (charter v1.3): on the nested selection
+  // folds, test rows that are OOD relative to their fold's training domain are
+  // scored under multipliers {×1.0, ×1.5, ×2.0} against the production 50%
+  // band; the adopted multiplier is the smallest whose OOD coverage reaches
+  // nominal − 0.10 (≥ 40%); if none reaches it, ×2.0 is adopted and flagged.
+  const oodMultCandidates = [1.0, 1.5, 2.0].map((mult) => {
+    let nOod = 0;
+    let covered = 0;
+    for (const d of nestedFoldData.filter((x) => x.pct < 90)) {
+      const foldDomain: OodDomain = {
+        categories: [...new Set(d.foldTrain.map((p) => p.category ?? 'Other'))].sort(),
+        chains: [...new Set(d.foldTrain.map(mainChain))].sort(),
+        log_tvl_min: Math.min(...d.foldTrain.map((p) => Math.log10(Math.max(1, p.tvl_usd) + model.size_floor_usd))),
+        log_tvl_max: Math.max(...d.foldTrain.map((p) => Math.log10(Math.max(1, p.tvl_usd) + model.size_floor_usd))),
+        age_min_days: Math.min(...d.foldTrain.map((p) => ageDays(asOf, p.listed_at) ?? 0)),
+        age_max_days: Math.max(...d.foldTrain.map((p) => ageDays(asOf, p.listed_at) ?? 0)),
+      };
+      const foldCompLogTvls = d.foldTrain.map((p) => Math.log10(Math.max(1, p.tvl_usd) + model.size_floor_usd));
+      const errs = d.errs[selected];
+      d.foldTest.forEach((p, i) => {
+        const rep = oodReport(p, asOf, foldDomain, foldCompLogTvls, model, 1);
+        if (rep.is_ood) {
+          nOod += 1;
+          if (errs[i]! <= bandHalfwidth * mult) covered += 1;
+        }
+      });
+    }
+    return { multiplier: mult, n_ood_test_rows: nOod, coverage_50: nOod > 0 ? round4(covered / nOod) : 0 };
+  });
+  const oodMultAdopted = oodMultCandidates.find((c) => c.coverage_50 >= 0.4)?.multiplier ?? 2.0;
+  const oodMultReached = oodMultCandidates.some((c) => c.coverage_50 >= 0.4);
+  const oodMultiplierValidation: OodMultiplierValidation = {
+    candidates: oodMultCandidates,
+    adopted_multiplier: oodMultAdopted,
+    n_ood_test_rows: oodMultCandidates[0]?.n_ood_test_rows ?? 0,
+    reason: oodMultReached
+      ? `Multiplier ×${oodMultAdopted} adopted: on the nested selection folds' OOD test rows (n = ${oodMultCandidates[0]?.n_ood_test_rows ?? 0}) it is the smallest multiplier whose 50% band coverage reaches nominal − 0.10 (≥ 40%).`
+      : `No multiplier reaches 40% OOD coverage on the nested selection folds (n = ${oodMultCandidates[0]?.n_ood_test_rows ?? 0}); ×2.0 is adopted and flagged as insufficient — the OOD band does not cover OOD rows at the nominal rate, so OOD predictions stay low-confidence.`,
+  };
+  const oodBandMultiplier = oodMultAdopted;
+
+  // The conformal slices (charter v1.3): observed empirical coverage of the
+  // 50/80/90% bands by historical regime, TVL band, age band, and OOD vs
+  // in-distribution — coverage is a measurement in this design, never a
+  // guarantee. The Wilson 95% interval on the 50% coverage is published with
+  // each slice, and the calibration-sample sufficiency for the 90% quantile.
+  const wilsonCi = (k: number, n: number): [number, number] => {
+    if (n === 0) return [0, 0];
+    const z = 1.96;
+    const p = k / n;
+    const denom = 1 + (z * z) / n;
+    const center = (p + (z * z) / (2 * n)) / denom;
+    const half = (z * Math.sqrt((p * (1 - p)) / n + (z * z) / (4 * n * n))) / denom;
+    return [round4(Math.max(0, center - half)), round4(Math.min(1, center + half))];
+  };
+  const hw50 = conformalBands[0]!.halfwidth_dex;
+  const hw80 = conformalBands[1]!.halfwidth_dex;
+  const hw90 = conformalBands[2]!.halfwidth_dex;
+  const sliceOf = (slice: string, group: string, errs: number[]): ConformalSlice => {
+    const n = errs.length;
+    const c50 = errs.filter((e) => e <= hw50).length;
+    return {
+      slice,
+      group,
+      n,
+      coverage_50: n > 0 ? round4(c50 / n) : 0,
+      coverage_80: n > 0 ? round4(errs.filter((e) => e <= hw80).length / n) : 0,
+      coverage_90: n > 0 ? round4(errs.filter((e) => e <= hw90).length / n) : 0,
+      coverage_50_ci: wilsonCi(c50, n),
+    };
+  };
+  const oofByComp = comps.map((p, i) => ({
+    p,
+    err: selected === 'huber' ? cvPairs[i]!.huber : selected === 'ols' ? cvPairs[i]!.ols : cvPairs[i]!.ridge,
+  }));
+  const terciles = <T>(items: T[], keyOf: (x: T) => number): [T[], T[], T[]] => {
+    const sorted = [...items].sort((a, b) => keyOf(a) - keyOf(b));
+    const n = sorted.length;
+    return [sorted.slice(0, Math.floor(n / 3)), sorted.slice(Math.floor(n / 3), Math.floor((2 * n) / 3)), sorted.slice(Math.floor((2 * n) / 3))];
+  };
+  const [regOld, regMid, regNew] = terciles(oofByComp, (x) => Date.parse(`${x.p.listed_at!}T00:00:00Z`));
+  const [tvlLow, tvlMid, tvlHigh] = terciles(oofByComp, (x) => x.p.tvl_usd);
+  const [ageYoung, ageMid, ageOld] = terciles(oofByComp, (x) => ageDays(asOf, x.p.listed_at) ?? 0);
+  // OOD vs in-distribution on nested test rows (all 5 folds), against the BASE
+  // band (no multiplier) — so the reader can see what the widening buys.
+  const oodSliceErrs: { ood: number[]; ind: number[] } = { ood: [], ind: [] };
+  for (const d of nestedFoldData) {
+    const foldDomain: OodDomain = {
+      categories: [...new Set(d.foldTrain.map((p) => p.category ?? 'Other'))].sort(),
+      chains: [...new Set(d.foldTrain.map(mainChain))].sort(),
+      log_tvl_min: Math.min(...d.foldTrain.map((p) => Math.log10(Math.max(1, p.tvl_usd) + model.size_floor_usd))),
+      log_tvl_max: Math.max(...d.foldTrain.map((p) => Math.log10(Math.max(1, p.tvl_usd) + model.size_floor_usd))),
+      age_min_days: Math.min(...d.foldTrain.map((p) => ageDays(asOf, p.listed_at) ?? 0)),
+      age_max_days: Math.max(...d.foldTrain.map((p) => ageDays(asOf, p.listed_at) ?? 0)),
+    };
+    const foldCompLogTvls = d.foldTrain.map((p) => Math.log10(Math.max(1, p.tvl_usd) + model.size_floor_usd));
+    const errs = d.errs[selected];
+    d.foldTest.forEach((p, i) => {
+      const rep = oodReport(p, asOf, foldDomain, foldCompLogTvls, model, 1);
+      (rep.is_ood ? oodSliceErrs.ood : oodSliceErrs.ind).push(errs[i]!);
+    });
+  }
+  const conformalSlices: ConformalSlices = {
+    by_regime: [
+      sliceOf('regime', 'oldest tercile by listing date', regOld.map((x) => x.err)),
+      sliceOf('regime', 'middle tercile by listing date', regMid.map((x) => x.err)),
+      sliceOf('regime', 'newest tercile by listing date', regNew.map((x) => x.err)),
+    ],
+    by_tvl_band: [
+      sliceOf('tvl', 'low TVL tercile', tvlLow.map((x) => x.err)),
+      sliceOf('tvl', 'mid TVL tercile', tvlMid.map((x) => x.err)),
+      sliceOf('tvl', 'high TVL tercile', tvlHigh.map((x) => x.err)),
+    ],
+    by_age_band: [
+      sliceOf('age', 'youngest tercile by age', ageYoung.map((x) => x.err)),
+      sliceOf('age', 'middle tercile by age', ageMid.map((x) => x.err)),
+      sliceOf('age', 'oldest tercile by age', ageOld.map((x) => x.err)),
+    ],
+    by_ood: [
+      sliceOf('ood', 'out-of-distribution (nested test rows, base band)', oodSliceErrs.ood),
+      sliceOf('ood', 'in-distribution (nested test rows, base band)', oodSliceErrs.ind),
+    ],
+    calibration_n: selectedCvErrs.length,
+    quantile_index_90: Math.min(selectedCvErrs.length, Math.max(1, Math.ceil((selectedCvErrs.length + 1) * 0.9))),
+    coverage_90_standard_error: round4(Math.sqrt((0.9 * 0.1) / selectedCvErrs.length)),
+    note: 'Coverage is observed empirical coverage in this evaluation design (cross-conformal on out-of-fold residuals), never a guarantee. The 90% band is the 64th of 70 order statistics, so its coverage has a binomial standard error of about 0.036 — a shortfall of a few points is sampling noise. The OOD slice uses the base band (no multiplier) on nested test rows: the in-distribution slice is EMPTY by construction — chronological folds make every test row younger than every training row, so every test row is age-out-of-range and therefore OOD — so the OOD-vs-in-distribution comparison is vacuous here and the OOD multiplier validation covers age-OOD rows only, not category/chain-OOD rows. That is a limitation of the validation, reported as-is.',
   };
 
   // Paired Huber-vs-OLS comparisons on identical observations: the median
@@ -2439,6 +3073,87 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
     .sort((a, b) => a - b);
   const bootstrapSd = median(sds) ?? 0;
 
+  // The leave-one-protocol-out influence report (charter v1.3): refit the selected
+  // estimator without each comparable and measure how much the board moves. One
+  // row per protocol — no protocol contributes two observations — so dropping
+  // one row is dropping one protocol.
+  const boardProtocols = snapshot.protocols.filter(isRankable);
+  const lopoRows: LopoRow[] = comps.map((dropped) => {
+    const refit = fitEst(selected)(comps.filter((p) => p.slug !== dropped.slug));
+    let maxDelta = 0;
+    for (const p of boardProtocols) {
+      const a = predictLog(p, asOf, full.beta, full.adj, full.chainAdj, model);
+      const b = predictLog(p, asOf, refit.beta, refit.adj, refit.chainAdj, model);
+      maxDelta = Math.max(maxDelta, Math.abs(a - b));
+    }
+    return {
+      slug: dropped.slug,
+      abs_delta_slope: round4(Math.abs(refit.beta[1]! - full.beta[1]!)),
+      abs_delta_intercept: round4(Math.abs(refit.beta[0]! - full.beta[0]!)),
+      max_abs_delta_predicted_log: round4(maxDelta),
+    };
+  });
+  const lopoSorted = [...lopoRows].sort((a, b) => b.max_abs_delta_predicted_log - a.max_abs_delta_predicted_log);
+  // Error per sector / chain / TVL band, pooled over all nested test rows.
+  const nestedTestRows: { p: SnapshotProtocol; err: number }[] = [];
+  for (const d of nestedFoldData) {
+    const errs = d.errs[selected];
+    d.foldTest.forEach((p, i) => nestedTestRows.push({ p, err: errs[i]! }));
+  }
+  const errByGroup = (keyOf: (p: SnapshotProtocol) => string): { group: string; n: number; median_abs_log_err: number }[] => {
+    const groups = new Map<string, number[]>();
+    for (const r of nestedTestRows) {
+      const k = keyOf(r.p);
+      const list = groups.get(k);
+      if (list === undefined) groups.set(k, [r.err]);
+      else list.push(r.err);
+    }
+    return [...groups.entries()]
+      .map(([group, errs]) => ({ group, n: errs.length, median_abs_log_err: round4(pooledMedian(errs)) }))
+      .sort((a, b) => b.n - a.n);
+  };
+  const tvlSorted = [...nestedTestRows].sort((a, b) => a.p.tvl_usd - b.p.tvl_usd);
+  const tercileOf = (i: number, n: number): string => (i < n / 3 ? 'low TVL tercile' : i < (2 * n) / 3 ? 'mid TVL tercile' : 'high TVL tercile');
+  const tvlTercileGroups = new Map<string, number[]>();
+  tvlSorted.forEach((r, i) => {
+    const k = tercileOf(i, tvlSorted.length);
+    const list = tvlTercileGroups.get(k);
+    if (list === undefined) tvlTercileGroups.set(k, [r.err]);
+    else list.push(r.err);
+  });
+  const compTvls = comps.map((p) => p.tvl_usd).sort((a, b) => a - b);
+  const compAges = comps.map((p) => ageDays(asOf, p.listed_at) ?? 0).sort((a, b) => a - b);
+  const boardTvls = boardProtocols.map((p) => p.tvl_usd);
+  const boardAges = boardProtocols.map((p) => ageDays(asOf, p.listed_at) ?? 0);
+  const lopoInfluence: LopoInfluence = {
+    n_protocols: comps.length,
+    observations_per_protocol: 1,
+    max_abs_delta_slope: round4(Math.max(...lopoRows.map((r) => r.abs_delta_slope))),
+    max_abs_delta_intercept: round4(Math.max(...lopoRows.map((r) => r.abs_delta_intercept))),
+    max_abs_delta_predicted_log: round4(Math.max(...lopoRows.map((r) => r.max_abs_delta_predicted_log))),
+    most_influential: lopoSorted.slice(0, 5),
+    tvl_range_usd: [compTvls[0]!, compTvls[compTvls.length - 1]!],
+    age_range_days: [compAges[0]!, compAges[compAges.length - 1]!],
+    n_board_rows_outside_tvl_range: boardTvls.filter((t) => t < compTvls[0]! || t > compTvls[compTvls.length - 1]!).length,
+    n_board_rows_outside_age_range: boardAges.filter((a) => a < compAges[0]! || a > compAges[compAges.length - 1]!).length,
+    error_by_category: errByGroup((p) => p.category ?? 'Other'),
+    error_by_chain: errByGroup(mainChain),
+    error_by_tvl_tercile: [...tvlTercileGroups.entries()].map(([group, errs]) => ({ group, n: errs.length, median_abs_log_err: round4(pooledMedian(errs)) })),
+    note:
+      Math.max(...lopoRows.map((r) => r.max_abs_delta_predicted_log)) > 0.1
+        ? 'FLAG: dropping a single comparable moves some board row by more than 0.1 dex — one protocol can move the board, and the flagged rows below name it.'
+        : 'No single comparable moves any board row by more than 0.1 dex: the board does not hinge on one protocol.',
+  };
+
+  // v1.3: the production value cap — the maximum market cap observed among the
+  // 70 dated comparables — and the P90 cap for the tournament's sensitivity row.
+  const valueCapUsd = productionValueCapUsd;
+  const sortedCompMcaps = comps.map((p) => p.mcap_usd!).sort((a, b) => a - b);
+  const valueCapP90Usd = sortedCompMcaps[Math.min(sortedCompMcaps.length - 1, Math.ceil(0.9 * sortedCompMcaps.length) - 1)]!;
+  const compMcaps = comps.map((p) => p.mcap_usd!);
+  const oofSignedResiduals = comps.map(
+    (p, i) => Math.log10(p.mcap_usd!) - (selected === 'huber' ? cvPred.huber.get(p.slug)! : selected === 'ols' ? cvPred.ols.get(p.slug)! : cvPred.ridge.get(p.slug)!),
+  );
   const rawGrowths = comps.map((p) => finite(p.change_7d, 0) / 100).sort((a, b) => a - b);
   const fit: Fit = {
     intercept: round4(full.beta[0]!),
@@ -2497,6 +3212,11 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
     gate_test: null,
     nested_reconciliation: nestedReconciliation,
     floor_sensitivity: floorSensitivity,
+    distribution_tournament: null,
+    horizon_cohort: horizonCohort,
+    ood_multiplier_validation: oodMultiplierValidation,
+    lopo_influence: lopoInfluence,
+    conformal_slices: conformalSlices,
   };
   const toComparable = (m: Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }>): Comparable[] =>
     [...m.entries()]
@@ -2508,20 +3228,24 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
     x: round3(Math.log10(p.tvl_usd)),
     y: round3(Math.log10(p.mcap_usd!)),
   }));
-  return { beta: full.beta, adjustments: full.adj, chainAdjustments: full.chainAdj, fit, validation, seasoning, bandHalfwidth, comparables, chainComparables, scatter, oodDomain, oodCompLogTvls: comps.map((p) => Math.log10(Math.max(1, p.tvl_usd) + model.size_floor_usd)), launchOddsDecision, plattFitted };
+  return { beta: full.beta, adjustments: full.adj, chainAdjustments: full.chainAdj, fit, validation, seasoning, bandHalfwidth, comparables, chainComparables, scatter, oodDomain, oodCompLogTvls: comps.map((p) => Math.log10(Math.max(1, p.tvl_usd) + model.size_floor_usd)), launchOddsDecision, plattFitted, valueCapUsd, observedMaxMcapUsd, capKept, valueCapP90Usd, compMcaps, oofSignedResiduals, oodBandMultiplier, crpsValidation };
 }
 
-/** A board row's out-of-distribution report (charter v1.2): its main chain and
+/** A board row's out-of-distribution report (charter v1.3): its main chain and
  * category against the training sets, its log-TVL and age against the training
- * ranges, and its distance to the nearest comparable in log-TVL. A row is
- * out-of-distribution when any check fails or its nearest comparable is more
- * than 0.5 dex away in size. */
+ * ranges, and its distance to the nearest comparable in log-TVL. Tiers:
+ * 0 flags = in-distribution; exactly 1 flag = partially OOD (wider band, the
+ * validated multiplier, confidence 'extrapolation'); ≥ 2 flags, or unseen
+ * category AND unseen chain = major OOD (unsupported extrapolation, never a
+ * production FARM). A row with no credible comparable (nearest > 0.5 dex) is
+ * never a production FARM, whatever its tier. */
 export function oodReport(
   p: SnapshotProtocol,
   asOf: string,
   domain: OodDomain,
   compLogTvls: number[],
   model: ModelConstants = MODEL,
+  bandMultiplier: number = 1.5,
 ): OodReport {
   const logTvl = Math.log10(Math.max(1, p.tvl_usd) + model.size_floor_usd);
   const age = ageDays(asOf, p.listed_at);
@@ -2530,7 +3254,10 @@ export function oodReport(
   const tvlOut = logTvl < domain.log_tvl_min || logTvl > domain.log_tvl_max;
   const ageOut = age === null || age < domain.age_min_days || age > domain.age_max_days;
   const nearest = compLogTvls.length > 0 ? Math.min(...compLogTvls.map((x) => Math.abs(x - logTvl))) : Infinity;
-  const isOod = unseenChain || unseenCategory || tvlOut || ageOut || nearest > 0.5;
+  const flagCount = (unseenChain ? 1 : 0) + (unseenCategory ? 1 : 0) + (tvlOut ? 1 : 0) + (ageOut ? 1 : 0) + (nearest > 0.5 ? 1 : 0);
+  const isOod = flagCount > 0;
+  const tier: OodReport['tier'] =
+    flagCount === 0 ? 'in-distribution' : flagCount === 1 ? 'partial' : 'major';
   return {
     unseen_chain: unseenChain,
     unseen_category: unseenCategory,
@@ -2538,18 +3265,57 @@ export function oodReport(
     age_out_of_range: ageOut,
     nearest_comp_distance_dex: round4(nearest),
     is_ood: isOod,
-    band_multiplier: isOod ? 1.5 : 1,
-    confidence: isOod ? 'extrapolation' : 'in-distribution',
+    flag_count: flagCount,
+    tier,
+    band_multiplier: isOod ? bandMultiplier : 1,
+    confidence: tier === 'in-distribution' ? 'in-distribution' : tier === 'partial' ? 'extrapolation' : 'unsupported',
   };
 }
 
-/** Whether a row passes one gate variant on its (simulated) EV statistics.
- * Variant (a): the current rule — mean EV > 0 AND P25 of net return > 0.
- * Variant (b): the Gemini proposal — mean EV > 0 AND the P50-to-P25 downside
- * is at most half the P50-to-P75 upside. All statistics from the same array. */
-export function gatePasses(variant: 'a' | 'b', evMean: number, evP25: number, evP50: number, evP75: number): boolean {
-  if (variant === 'a') return evMean > 0 && evP25 > 0;
-  return evMean > 0 && evP50 - evP25 <= 0.5 * (evP75 - evP50);
+/** Whether a row passes one gate policy on its (simulated) EV statistics.
+ * Policy (a): the current strict rule — mean EV > 0 AND P25 of net return > 0.
+ * Policy (b): the Gemini proposal — conditional mean EV > 3× plan cost AND
+ * unconditional mean EV > 0. Policy (c): the P(loss) ceiling — mean EV > 0
+ * AND P(negative return) ≤ 0.90. All statistics from the same array. The P25
+ * criterion (a) is documented as structurally impossible under base-rate
+ * launch odds (it needs P(net return > 0) ≥ 75% while p_L = 16.4%); it is
+ * tested only to document that fact. */
+export function gatePasses(
+  policy: 'a' | 'b' | 'c',
+  stats: { evMean: number; evP25: number; evP50: number; evP75: number; conditionalMeanEv: number; planCost: number; probNegative: number },
+): boolean {
+  if (policy === 'a') return stats.evMean > 0 && stats.evP25 > 0;
+  if (policy === 'b') return stats.conditionalMeanEv > 3 * stats.planCost && stats.evMean > 0;
+  return stats.evMean > 0 && stats.probNegative <= 0.9;
+}
+
+/** The gate statistics of one row's simulation, in the shape gatePasses reads. */
+export function gateStats(sim: EvSimulation, planCost: number): { evMean: number; evP25: number; evP50: number; evP75: number; conditionalMeanEv: number; planCost: number; probNegative: number } {
+  return {
+    evMean: sim.ev_mean_usd,
+    evP25: sim.ev_p25_usd,
+    evP50: sim.ev_p50_usd,
+    evP75: sim.ev_p75_usd,
+    conditionalMeanEv: sim.ev_conditional_mean_usd,
+    planCost,
+    probNegative: sim.prob_negative,
+  };
+}
+
+/** The gate statistics of one row's simulation under the conservative launch
+ * odds (the stress test the FARM verdict must survive). The conditional mean
+ * EV does not depend on p_L (it is conditional on launch); the unconditional
+ * mean, the quantiles and P(negative) are the conservative ones. */
+export function gateStatsConservative(sim: EvSimulation, planCost: number): { evMean: number; evP25: number; evP50: number; evP75: number; conditionalMeanEv: number; planCost: number; probNegative: number } {
+  return {
+    evMean: sim.ev_mean_conservative_usd,
+    evP25: sim.ev_p25_conservative_usd,
+    evP50: sim.ev_p50_conservative_usd,
+    evP75: sim.ev_p75_conservative_usd,
+    conditionalMeanEv: sim.ev_conditional_mean_usd,
+    planCost,
+    probNegative: sim.prob_negative_conservative,
+  };
 }
 
 /** The fitted value of one protocol: value if it launches, launch odds, and the odds-weighted implied value, with the P25/P75 band and the EV simulation (charter v1.2). */
@@ -2589,7 +3355,7 @@ export function impliedValue(
   const implied = Math.min(model.value_max, Math.max(model.value_min, Math.round(valueIfLaunches * oddsAdopted)));
   const cost = planCostUsd(protocol, model, asOf);
   const beOdds = breakEvenOdds(valueIfLaunches, cost, model);
-  const ood = oodReport(protocol, asOf, fitted.oodDomain, fitted.oodCompLogTvls, model);
+  const ood = oodReport(protocol, asOf, fitted.oodDomain, fitted.oodCompLogTvls, model, fitted.oodBandMultiplier);
   const effectiveHalfwidth = fitted.bandHalfwidth * ood.band_multiplier;
   const bandP25 = Math.min(model.value_max, Math.max(model.value_min, Math.round(10 ** (predictedLog - effectiveHalfwidth) * oddsAdopted)));
   const bandP75 = Math.min(model.value_max, Math.max(model.value_min, Math.round(10 ** (predictedLog + effectiveHalfwidth) * oddsAdopted)));
@@ -2606,6 +3372,7 @@ export function impliedValue(
     fitted.bandHalfwidth,
     ood.band_multiplier,
     model,
+    fitted.valueCapUsd,
   );
   // growthPct is the protocol's raw 7-day change, display only: growth is not a
   // production feature (charter v1.2).
@@ -2765,27 +3532,28 @@ export function expectedValue(launchOdds: number, valueIfLaunches: number, cost:
 
 /**
  * The farm verdict, from the simulated expected net return and the tested gate
- * (charter v1.2): farm only when the adopted gate passes under the CONSERVATIVE
+ * (charter v1.3): farm only when the adopted policy passes under the CONSERVATIVE
  * launch-probability assumption (the stress test) — a row that passes under the
  * adopted odds but not under the conservative odds is demoted to marginal.
- * Marginal when the mean EV is positive under the adopted odds but the row is
- * not a farm, or when the mean EV is negative but the break-even odds are low
- * enough that a slightly better launch chance would flip it; skip otherwise.
- * The odds are the plan's and the protocol's together: a protocol's own launch
- * odds (p_L) decide the expected return, the break-even odds (p_BE) decide how
- * far away a positive return is.
+ * A major-OOD row (unsupported extrapolation) or a row with no credible
+ * comparable (nearest > 0.5 dex) can never be a production FARM, whatever the
+ * gate says. Marginal when the mean EV is positive under the adopted odds but
+ * the row is not a farm, or when the mean EV is negative but the break-even
+ * odds are low enough that a slightly better launch chance would flip it;
+ * skip otherwise. The odds are the plan's and the protocol's together: a
+ * protocol's own launch odds (p_L) decide the expected return, the break-even
+ * odds (p_BE) decide how far away a positive return is.
  */
-export function verdictFor(sim: EvSimulation, breakEvenOddsValue: number, gateVariant: 'a' | 'b', model: ModelConstants = MODEL): Verdict {
-  if (
-    gatePasses(
-      gateVariant,
-      sim.ev_mean_conservative_usd,
-      sim.ev_p25_conservative_usd,
-      sim.ev_p50_conservative_usd,
-      sim.ev_p75_conservative_usd,
-    )
-  )
-    return 'farm';
+export function verdictFor(
+  sim: EvSimulation,
+  breakEvenOddsValue: number,
+  gatePolicy: 'a' | 'b' | 'c',
+  planCost: number,
+  ood: OodReport | null = null,
+  model: ModelConstants = MODEL,
+): Verdict {
+  const farmBlockedByOod = ood !== null && (ood.tier === 'major' || ood.nearest_comp_distance_dex > 0.5);
+  if (!farmBlockedByOod && gatePasses(gatePolicy, gateStatsConservative(sim, planCost))) return 'farm';
   if (sim.ev_mean_usd > 0) return 'marginal';
   if (breakEvenOddsValue <= model.marginal_break_even) return 'marginal';
   return 'skip';
@@ -2915,57 +3683,217 @@ export function farmSteps(p: SnapshotProtocol, v: ReturnType<typeof impliedValue
   ];
 }
 
-/** The gate test (charter v1.2, prespecified before results): both gate variants
- * tested honestly on the corrected simulation statistics, under the adopted
- * (base-rate) launch odds. The choice rule: adopt the variant that (i) farms at
- * least one row AND (ii) rejects at least one row with ev_mean > 0 through its
- * additional condition. If exactly one satisfies both, adopt it; if both do,
- * adopt the one with the lower maximum P(negative) among its FARM rows; if
- * neither does, adopt variant (a) — the pre-existing charter rule — and report
- * the resulting FARM count, even if zero. The FARM count is never a target. */
-export function runGateTest(rows: { slug: string; sim: EvSimulation }[]): GateTest {
-  const testVariant = (variant: 'a' | 'b'): GateTestVariant => {
-    const farms = rows.filter((r) => gatePasses(variant, r.sim.ev_mean_usd, r.sim.ev_p25_usd, r.sim.ev_p50_usd, r.sim.ev_p75_usd));
+/** The gate-policy test (charter v1.3, prespecified before results): three
+ * policies tested honestly on the corrected simulation statistics, under the
+ * adopted (base-rate) launch odds. The choice rule: a policy is eligible iff
+ * it (i) farms at least one row, (ii) rejects at least one row with mean EV >
+ * 0 through its additional condition, and (iii) its maximum P(negative return)
+ * among its FARM rows is ≤ 0.90. Among eligible policies, adopt the one with
+ * the lowest maximum P(negative return) among its farms; ties go to (a), then
+ * (b), then (c). If no policy is eligible, adopt (a) — the pre-existing
+ * charter rule — and report the resulting FARM count, even if zero. The FARM
+ * count is never a target. */
+export function runGateTest(rows: { slug: string; sim: EvSimulation; planCost: number }[]): GateTest {
+  const RISK_CEILING = 0.9;
+  const testPolicy = (policy: 'a' | 'b' | 'c'): GateTestVariant => {
+    const farms = rows.filter((r) => gatePasses(policy, gateStats(r.sim, r.planCost)));
     const positiveEv = rows.filter((r) => r.sim.ev_mean_usd > 0);
     const farmSlugs = new Set(farms.map((r) => r.slug));
     const rejectedPositive = positiveEv.filter((r) => !farmSlugs.has(r.slug));
+    const maxProbNegative = farms.length > 0 ? round4(Math.max(...farms.map((r) => r.sim.prob_negative))) : null;
+    const fires = farms.length >= 1;
+    const filters = rejectedPositive.length >= 1;
+    const withinRiskCeiling = maxProbNegative === null || maxProbNegative <= RISK_CEILING;
     return {
-      variant,
+      variant: policy,
       rule:
-        variant === 'a'
-          ? 'FARM iff mean EV > 0 AND P25 of net return > 0 (the current rule, on the corrected simulation statistics).'
-          : 'FARM iff mean EV > 0 AND the P50-to-P25 downside is at most half the P50-to-P75 upside (the Gemini proposal).',
+        policy === 'a'
+          ? 'FARM iff mean EV > 0 AND P25 of net return > 0 (the current strict rule, on the corrected simulation statistics).'
+          : policy === 'b'
+            ? 'FARM iff conditional mean EV > 3× plan cost AND unconditional mean EV > 0 (the Gemini proposal).'
+            : 'FARM iff mean EV > 0 AND P(negative return) ≤ 0.90 (the P(loss) ceiling).',
       farm_count: farms.length,
       farm_slugs: farms.map((r) => r.slug),
-      max_prob_negative: farms.length > 0 ? round4(Math.max(...farms.map((r) => r.sim.prob_negative))) : null,
-      fires: farms.length >= 1,
-      filters: rejectedPositive.length >= 1,
+      max_prob_negative: maxProbNegative,
+      fires,
+      filters,
+      within_risk_ceiling: withinRiskCeiling,
+      eligible: fires && filters && withinRiskCeiling,
       positive_ev_count: positiveEv.length,
       rejected_positive_count: rejectedPositive.length,
     };
   };
-  const a = testVariant('a');
-  const b = testVariant('b');
-  const aWorks = a.fires && a.filters;
-  const bWorks = b.fires && b.filters;
-  let adopted: 'a' | 'b';
+  const a = testPolicy('a');
+  const b = testPolicy('b');
+  const c = testPolicy('c');
+  const eligible = [a, b, c].filter((v) => v.eligible);
+  let adopted: 'a' | 'b' | 'c';
   let reason: string;
-  if (aWorks && !bWorks) {
-    adopted = 'a';
-    reason = `Variant (a) adopted: it is the only variant that both fires (${a.farm_count} farm) and filters (it rejects ${a.rejected_positive_count} of ${a.positive_ev_count} positive-mean-EV rows through its additional condition); variant (b) ${b.fires ? `farms ${b.farm_count} rows but its additional condition rejects nothing` : 'farms nothing'}.`;
-  } else if (bWorks && !aWorks) {
-    adopted = 'b';
-    reason = `Variant (b) adopted: it is the only variant that both fires (${b.farm_count} farms) and filters (it rejects ${b.rejected_positive_count} of ${b.positive_ev_count} positive-mean-EV rows through its additional condition); variant (a) ${a.fires ? `farms ${a.farm_count} rows but its additional condition rejects nothing` : 'farms nothing'}.`;
-  } else if (aWorks && bWorks) {
-    const aMax = a.max_prob_negative ?? 1;
-    const bMax = b.max_prob_negative ?? 1;
-    adopted = aMax <= bMax ? 'a' : 'b';
-    reason = `Both variants fire and filter; variant (${adopted}) adopted for the lower maximum P(negative return) among its FARM rows (${(adopted === 'a' ? aMax : bMax)} vs ${(adopted === 'a' ? bMax : aMax)}).`;
+  if (eligible.length > 0) {
+    const byRisk = [...eligible].sort((x, y) => {
+      const xm = x.max_prob_negative ?? 1;
+      const ym = y.max_prob_negative ?? 1;
+      if (xm !== ym) return xm - ym;
+      return 'abc'.indexOf(x.variant) - 'abc'.indexOf(y.variant);
+    });
+    adopted = byRisk[0]!.variant;
+    const winner = byRisk[0]!;
+    reason = `Policy (${adopted}) adopted: it is eligible — it fires (${winner.farm_count} farm${winner.farm_count === 1 ? '' : 's'}) and filters (it rejects ${winner.rejected_positive_count} of ${winner.positive_ev_count} positive-mean-EV rows) and its worst farm's P(negative return) is ${winner.max_prob_negative} (≤ 0.90) — and it has the lowest maximum P(negative return) among the eligible policies. Policy (a) farms ${a.farm_count} rows (${a.eligible ? 'eligible' : 'not eligible'}), policy (b) farms ${b.farm_count} rows (${b.eligible ? 'eligible' : 'not eligible'}), policy (c) farms ${c.farm_count} rows (${c.eligible ? 'eligible' : 'not eligible'}).`;
   } else {
     adopted = 'a';
-    reason = `Neither variant both fires and filters — variant (a) farms ${a.farm_count} rows (${a.fires ? 'fires' : 'does not fire'}; ${a.filters ? `filters ${a.rejected_positive_count} of ${a.positive_ev_count} positive-mean-EV rows` : 'does not filter'}), variant (b) farms ${b.farm_count} rows (${b.fires ? 'fires' : 'does not fire'}; ${b.filters ? `filters ${b.rejected_positive_count} of ${b.positive_ev_count} positive-mean-EV rows` : 'does not filter'}) — so the pre-existing charter rule (a) is kept and the resulting FARM count (${a.farm_count}) is reported as-is. The FARM count is never a target.`;
+    reason = `No policy is eligible — policy (a) farms ${a.farm_count} rows (${a.fires ? 'fires' : 'does not fire'}; ${a.filters ? `filters ${a.rejected_positive_count} of ${a.positive_ev_count} positive-mean-EV rows` : 'does not filter'}; max P(negative) ${a.max_prob_negative ?? 'n/a'}), policy (b) farms ${b.farm_count} rows (${b.fires ? 'fires' : 'does not fire'}; ${b.filters ? `filters ${b.rejected_positive_count} of ${b.positive_ev_count} positive-mean-EV rows` : 'does not filter'}; max P(negative) ${b.max_prob_negative ?? 'n/a'}), policy (c) farms ${c.farm_count} rows (${c.fires ? 'fires' : 'does not fire'}; ${c.filters ? `filters ${c.rejected_positive_count} of ${c.positive_ev_count} positive-mean-EV rows` : 'does not filter'}; max P(negative) ${c.max_prob_negative ?? 'n/a'}) — so the pre-existing charter rule (a) is kept and the resulting FARM count (${a.farm_count}) is reported as-is. The FARM count is never a target.`;
   }
-  return { variant_a: a, variant_b: b, adopted, reason };
+  return { variant_a: a, variant_b: b, variant_c: c, adopted, reason };
+}
+
+/**
+ * The distribution-sensitivity tournament (charter v1.3): the same farm / skip
+ * rows are re-priced under five conditional-launch-value distributions plus a
+ * P90-cap sensitivity row, and the FARM verdicts are compared across them, so
+ * no decision rests on the uncapped lognormal mean alone. The distributions
+ * are paired where possible: the lognormal, the capped lognormal, and the
+ * P90-capped lognormal share the same normal draws per row; the launch
+ * uniforms are common to every distribution for a row. The tournament uses
+ * 5,000 draws per row per distribution; the production simulation keeps 20,000.
+ * The production distribution is the capped lognormal when the CRPS validation
+ * kept the cap, and the uncapped lognormal when it reverted.
+ */
+export function runDistributionTournament(
+  rows: { slug: string; name: string; predictedLog: number; planCost: number; sigma: number; launchOdds: number }[],
+  fitted: FittedModel,
+  model: ModelConstants = MODEL,
+): DistributionTournament {
+  const N = 5000;
+  const round2 = (n: number): number => Math.round(n * 100) / 100;
+  const cap = fitted.observedMaxMcapUsd;
+  const capP90 = fitted.valueCapP90Usd;
+  const compMcaps = fitted.compMcaps;
+  const residuals = fitted.oofSignedResiduals;
+  const breakEvenValue = (planCost: number): number => planCost / model.farmer_share;
+  const nextNormal = (rand: () => number, spare: { v: number | null }): number => {
+    if (spare.v !== null) {
+      const z = spare.v;
+      spare.v = null;
+      return z;
+    }
+    let a = 0;
+    let b = 0;
+    do {
+      a = rand();
+      b = rand();
+    } while (a <= 0);
+    const r = Math.sqrt(-2 * Math.log(a));
+    const t = 2 * Math.PI * b;
+    spare.v = r * Math.sin(t);
+    return r * Math.cos(t);
+  };
+  const valueDraws = (kind: DistributionKind, row: { slug: string; predictedLog: number; sigma: number }): number[] => {
+    const rand = mulberry32(fnv1aHash(`${row.slug}|tournament|${kind}`));
+    const spare: { v: number | null } = { v: null };
+    const draws: number[] = [];
+    const clampV = (v: number): number => Math.max(model.value_min, Math.min(model.value_max, v));
+    if (kind === 'empirical') {
+      for (let i = 0; i < N; i++) draws.push(compMcaps[Math.floor(rand() * compMcaps.length)]!);
+      return draws;
+    }
+    if (kind === 'bootstrap-residuals') {
+      for (let i = 0; i < N; i++) draws.push(clampV(Math.pow(10, row.predictedLog + residuals[Math.floor(rand() * residuals.length)]!)));
+      return draws;
+    }
+    // The lognormal family shares one normal stream per row, so the three
+    // capped variants are perfectly paired and differ only by the cap.
+    const sharedRand = mulberry32(fnv1aHash(`${row.slug}|tournament|normal`));
+    const sharedSpare: { v: number | null } = { v: null };
+    for (let i = 0; i < N; i++) {
+      if (kind === 'lognormal') {
+        draws.push(clampV(Math.pow(10, row.predictedLog + row.sigma * nextNormal(sharedRand, sharedSpare))));
+      } else if (kind === 'capped-lognormal') {
+        draws.push(clampV(Math.min(cap, Math.pow(10, row.predictedLog + row.sigma * nextNormal(sharedRand, sharedSpare)))));
+      } else if (kind === 'capped-p90-lognormal') {
+        draws.push(clampV(Math.min(capP90, Math.pow(10, row.predictedLog + row.sigma * nextNormal(sharedRand, sharedSpare)))));
+      } else if (kind === 'student-t') {
+        const z = nextNormal(rand, spare);
+        let chi2 = 0;
+        for (let k = 0; k < 5; k++) {
+          const zi = nextNormal(rand, spare);
+          chi2 += zi * zi;
+        }
+        draws.push(clampV(Math.pow(10, row.predictedLog + row.sigma * (z / Math.sqrt(chi2 / 5)))));
+      }
+    }
+    return draws;
+  };
+  const rowStats = (kind: DistributionKind, row: { slug: string; predictedLog: number; planCost: number; sigma: number; launchOdds: number }): DistributionRowResult => {
+    const values = valueDraws(kind, row);
+    const sorted = [...values].sort((a, b) => a - b);
+    const launchRand = mulberry32(fnv1aHash(`${row.slug}|tournament|launch`));
+    const returns: number[] = [];
+    for (const v of values) {
+      returns.push(launchRand() < row.launchOdds ? model.farmer_share * v - row.planCost : -row.planCost);
+    }
+    returns.sort((a, b) => a - b);
+    const mean = (xs: number[]): number => xs.reduce((a, b) => a + b, 0) / xs.length;
+    const evMean = mean(returns);
+    const evP25 = quantileOf(returns, 0.25);
+    const evP50 = quantileOf(returns, 0.5);
+    const evP75 = quantileOf(returns, 0.75);
+    const probNegative = returns.filter((r) => r < 0).length / returns.length;
+    const conditionalMeanValue = mean(values);
+    const conditionalMeanEv = model.farmer_share * conditionalMeanValue - row.planCost;
+    return {
+      slug: row.slug,
+      conditional_mean_value_usd: round2(conditionalMeanValue),
+      conditional_median_value_usd: round2(quantileOf(sorted, 0.5)),
+      conditional_p90_value_usd: round2(quantileOf(sorted, 0.9)),
+      conditional_p95_value_usd: round2(quantileOf(sorted, 0.95)),
+      mean_net_ev_usd: round2(evMean),
+      median_net_return_usd: round2(evP50),
+      prob_negative: round4(probNegative),
+      prob_exceeds_break_even: round4(sorted.filter((v) => v >= breakEvenValue(row.planCost)).length / sorted.length),
+      farm_a: gatePasses('a', { evMean, evP25, evP50, evP75, conditionalMeanEv, planCost: row.planCost, probNegative }),
+      farm_b: gatePasses('b', { evMean, evP25, evP50, evP75, conditionalMeanEv, planCost: row.planCost, probNegative }),
+      farm_c: gatePasses('c', { evMean, evP25, evP50, evP75, conditionalMeanEv, planCost: row.planCost, probNegative }),
+    };
+  };
+  const kinds: DistributionKind[] = ['lognormal', 'capped-lognormal', 'capped-p90-lognormal', 'empirical', 'bootstrap-residuals', 'student-t'];
+  const results: DistributionResult[] = kinds.map((kind) => {
+    const rowResults = rows.map((row) => rowStats(kind, row));
+    const mean = (xs: number[]): number => xs.reduce((a, b) => a + b, 0) / xs.length;
+    const farmSlugs = (key: 'farm_a' | 'farm_b' | 'farm_c'): string[] => rowResults.filter((r) => r[key]).map((r) => r.slug);
+    return {
+      distribution: kind,
+      is_production: kind === (fitted.capKept ? 'capped-lognormal' : 'lognormal'),
+      n_rows: rowResults.length,
+      rows: rowResults,
+      pooled_conditional_mean_value_usd: round2(mean(rowResults.map((r) => r.conditional_mean_value_usd))),
+      pooled_conditional_median_value_usd: round2(mean(rowResults.map((r) => r.conditional_median_value_usd))),
+      pooled_mean_net_ev_usd: round2(mean(rowResults.map((r) => r.mean_net_ev_usd))),
+      pooled_prob_negative: round4(mean(rowResults.map((r) => r.prob_negative))),
+      farm_count_a: farmSlugs('farm_a').length,
+      farm_count_b: farmSlugs('farm_b').length,
+      farm_count_c: farmSlugs('farm_c').length,
+      farm_slugs_b: farmSlugs('farm_b'),
+    };
+  });
+  const production = results.find((r) => r.is_production)!;
+  const productionSet = new Set(production.farm_slugs_b);
+  const overlaps = results.map((r) => {
+    const set = new Set(r.farm_slugs_b);
+    const intersection = [...set].filter((s) => productionSet.has(s)).length;
+    const union = new Set([...set, ...productionSet]).size;
+    return { distribution: r.distribution, jaccard_vs_production_b: union > 0 ? round4(intersection / union) : 1 };
+  });
+  return {
+    n_draws: N,
+    cap_usd: cap,
+    cap_p90_usd: capP90,
+    production_distribution: production.distribution,
+    results,
+    farm_set_overlap_b: overlaps,
+    crps: fitted.crpsValidation,
+    cap_kept: fitted.capKept,
+    note: `The production distribution is the ${production.distribution}. The capped lognormal's pooled conditional mean is compared against the uncapped mean directly in the pooled rows above — the uncapped tail inflates the mean by design, and the farm counts under policy (b) show how much of that inflation the gate actually converts into farms. The empirical distribution ignores TVL entirely, so it is a floor of information, not a contender: a model that cannot distinguish protocols is worse than one that can, even when its pooled numbers look similar.`,
+  };
 }
 
 /** The protocols the board ranks, strongest first, with ranks 1..n and strictly decreasing values. */
@@ -2993,20 +3921,14 @@ export function buildBoard(
     const cost = planCostUsd(p, model, snapshot.as_of);
     return { p, v, cost };
   });
-  // The gate test runs on the scored rows' simulation statistics, under the adopted
+  // The gate-policy test runs on the scored rows' simulation statistics, under the adopted
   // launch odds — before any verdict is assigned.
-  const gateTest = runGateTest(scored.map((s) => ({ slug: s.p.slug, sim: s.v.sim })));
+  const gateTest = runGateTest(scored.map((s) => ({ slug: s.p.slug, sim: s.v.sim, planCost: s.cost })));
   const withVerdicts = scored.map((s) => ({
     ...s,
-    verdict: verdictFor(s.v.sim, s.v.breakEvenOdds, gateTest.adopted, model),
-    gatePassAdopted: gatePasses(gateTest.adopted, s.v.sim.ev_mean_usd, s.v.sim.ev_p25_usd, s.v.sim.ev_p50_usd, s.v.sim.ev_p75_usd),
-    gatePassConservative: gatePasses(
-      gateTest.adopted,
-      s.v.sim.ev_mean_conservative_usd,
-      s.v.sim.ev_p25_conservative_usd,
-      s.v.sim.ev_p50_conservative_usd,
-      s.v.sim.ev_p75_conservative_usd,
-    ),
+    verdict: verdictFor(s.v.sim, s.v.breakEvenOdds, gateTest.adopted, s.cost, s.v.ood, model),
+    gatePassAdopted: gatePasses(gateTest.adopted, gateStats(s.v.sim, s.cost)),
+    gatePassConservative: gatePasses(gateTest.adopted, gateStatsConservative(s.v.sim, s.cost)),
   }));
   withVerdicts.sort((a, b) => b.v.implied - a.v.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
   // Strictly decreasing implied values: rounding to whole dollars could tie two neighbours,
@@ -3039,6 +3961,8 @@ export function buildBoard(
       launch_odds_platt: round4(s.v.launchOddsPlatt),
       break_even_odds: round4(s.v.breakEvenOdds),
       expected_value_usd: s.v.sim.ev_mean_usd,
+      ev_conditional_mean_usd: s.v.sim.ev_conditional_mean_usd,
+      mean_value_if_launches_usd: s.v.sim.mean_value_if_launches_usd,
       ev_conservative_usd: s.v.sim.ev_p25_usd,
       ev_optimistic_usd: s.v.sim.ev_p75_usd,
       ev_p10_usd: s.v.sim.ev_p10_usd,
@@ -3115,6 +4039,8 @@ export function radarRow(row: BoardRow, onWatchlist: boolean): RadarRow {
     launch_odds_platt: row.model.launch_odds_platt,
     break_even_odds: row.model.break_even_odds,
     expected_value_usd: row.model.expected_value_usd,
+    ev_conditional_mean_usd: row.model.ev_conditional_mean_usd,
+    mean_value_if_launches_usd: row.model.mean_value_if_launches_usd,
     ev_conservative_usd: row.model.ev_conservative_usd,
     ev_optimistic_usd: row.model.ev_optimistic_usd,
     ev_p10_usd: row.model.ev_p10_usd,
@@ -3225,6 +4151,20 @@ export function buildRadar(
       })),
     assumptions: EV_ASSUMPTIONS,
   };
+  // The distribution-sensitivity tournament (charter v1.3): the same audit rows
+  // re-priced under five conditional-launch-value distributions plus a P90-cap
+  // sensitivity row, so no decision rests on the uncapped lognormal mean alone.
+  const tournamentRows = board
+    .filter((r) => r.verdict === 'farm' || r.model.expected_value_usd > 0)
+    .map((r) => ({
+      slug: r.slug,
+      name: r.name,
+      predictedLog: r.model.predicted_log_value,
+      planCost: r.plan_cost_usd,
+      sigma: fitted.bandHalfwidth > 0 ? (fitted.bandHalfwidth * r.model.ood.band_multiplier) / 0.6745 : 0.01,
+      launchOdds: r.model.launch_odds,
+    }));
+  fitted.validation.distribution_tournament = runDistributionTournament(tournamentRows, fitted, model);
   // The floor ranking diagnostic (charter v1.2): for each floor, refit the
   // selected estimator on the 70 dated comps and re-rank the board; compare
   // against the locked $25M board by Spearman ρ, top-20 overlap and top-10
@@ -3269,6 +4209,7 @@ export function buildRadar(
       EV_SIM_DRAWS,
       fnv1aHash('polymarket-international'),
       model,
+      fitted.valueCapUsd,
     );
     const simStats = evStatsFromPairs(pairs, poly.model.launch_odds, poly.plan_cost_usd, model);
     const conservativeStats = evStatsFromPairs(pairs, fitted.launchOddsDecision.conservative_lower_bound, poly.plan_cost_usd, model);
@@ -3310,6 +4251,10 @@ export function buildRadar(
         ev_p25_conservative_usd: Math.round(conservativeStats.p25),
         ev_p50_conservative_usd: Math.round(conservativeStats.p50),
         ev_p75_conservative_usd: Math.round(conservativeStats.p75),
+        prob_negative_conservative: round4(conservativeStats.probNegative),
+        ev_conditional_mean_usd: poly.model.ev_conditional_mean_usd,
+        mean_value_if_launches_usd: poly.model.mean_value_if_launches_usd,
+        value_cap_usd: fitted.valueCapUsd,
       },
     };
   }

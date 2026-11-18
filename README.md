@@ -4,7 +4,7 @@
 [![rank](https://make.fun/badge/token-radar-01/faaz12/token-radar/rank.svg)](https://make.fun/bounty/token-radar-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
 [![reward](https://make.fun/badge/token-radar-01/faaz12/token-radar/reward.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
 
-A make.fun `token-radar-01` entry (radar-9 model, evaluation charter v1.2).
+A make.fun `token-radar-01` entry (radar-10 model, evaluation charter v1.3).
 It reads a sealed DefiLlama snapshot of 758 protocols, finds the ones that
 record no token, and ranks them by what their launch would be worth — then
 hands in a dashboard a reader can use: the board, a detail view for every
@@ -393,6 +393,27 @@ not ranked: their token already exists, so there is no launch to price.
 Protocols whose token already trades are set aside
 with their market caps shown — the comparables the board is priced on.
 
+## What radar-10 changed
+
+Radar-9 is frozen before any radar-10 fitting (`~/workspace/goals/make-fun-masuk-top-10-leaderboard/hidden_files/radar-9-freeze/`, commit `d44874b`, tag `radar-9-v1.2`). The valuation model is UNCHANGED — OLS 3.7686 / 0.4105, nested 0.3284, selection 0.3203, walk-forward 0.5145, CV 0.4012, R² 0.4236, untouched 90% fold 0.4073, all byte-identical to radar-9. What changed is the decision engine around it, under charter v1.3 (locked before fitting): both reviewer AIs said NO to submitting radar-9, for different reasons, and radar-10 reconciles them honestly — it validates first, and adopts nothing that does not beat the baseline out of sample.
+
+| change | what was tested | outcome |
+|---|---|---|
+| Charter bumped to v1.3, locked before fitting | — | `EVALUATION_CHARTER.md` v1.3: distribution tournament, horizon launch probability with censoring, three prespecified gate policies with a risk ceiling, heuristic multiplier test, strict OOD tiers, validated band multiplier, LOPO influence, conformal slices, two-functions split (valuation radar vs farming decision engine), floor documentation |
+| Distribution tournament (6 distributions, 5,000 draws each, paired) | lognormal, capped-lognormal (production), capped-P90-lognormal, empirical comparable values, bootstrap comparable residuals, Student-t (df=5); per row + pooled: conditional mean/median/P90/P95 value, mean net EV, median net return, P(negative), P(exceeds break-even); farm counts per policy per distribution | pooled conditional mean: lognormal $45.2M, capped $44.6M, P90-cap $31.5M, empirical $84.5M, bootstrap $131.1M, Student-t $245.6M. Policy (a) farms 0 under EVERY distribution; (b)/(c) farm 65–96 depending on distribution. The 0-farm result is not an artifact of one tail choice |
+| Capped lognormal production distribution | cap = max observed dated-comp market cap ($2.65B, rain); CRPS on nested selection folds: capped 0.5065 vs uncapped 0.5058 dex on 28 test rows | cap kept (within the 10% tolerance). Polymarket's conditional mean value: $216M in radar-10's production simulation vs ~$894M in radar-9's uncapped, ×1.5-widened simulation |
+| Gate test: three prespecified policies + risk ceiling | (a) strict: mean EV > 0 AND P25 > 0; (b) Gemini: conditional mean EV > 3× plan cost AND unconditional mean EV > 0; (c) P(loss) ceiling: mean EV > 0 AND P(negative) ≤ 0.90. Eligible iff fires AND filters AND worst farm's P(negative) ≤ 0.90; lowest max P(negative) wins, ties (a)→(b)→(c); none eligible → keep (a) | (a) 0 farms, (b) 96, (c) 96 — of 96 positive-EV rows. (b) and (c) fire but filter nothing; (a) never fires. None eligible → (a) kept, board 0 farm / 96 marginal / 102 skip (was 0 / 151 / 47 — the cap moved 55 rows from marginal to skip). P25 math corrected: P25 > 0 needs P(net return > 0) ≥ 75%, impossible at the 16.4% base rate |
+| Horizon launch probability + survival test | event = launch within 12 months of listing; dated cohort 645 (launched 95, failed 11, disappeared 0, tokenless-resolved 392, tokenless-censored 147); risk set 485, rate 19.2% = UPPER BOUND (no launch date in snapshot); category-stratified survival candidate vs flat base rate on untouched chronological test (n=31) | NOT adopted: Brier 0.1407 vs 0.1363, log-loss 0.4646 vs 0.4454 — the flat base rate stands |
+| Heuristic activity multiplier test | 1.5× active / 0.5× dormant, active = 7-day TVL change > 0 (documented proxy — the snapshot carries no points-program/testnet field); untouched 80/90 test (n=100) | NOT adopted: Brier 0.1181 vs 0.1131, log-loss 0.4133 vs 0.3864 — the flat base rate stands |
+| OOD band multiplier validated | nested selection folds, OOD test rows (n=28), multipliers {×1.0, ×1.5, ×2.0}, smallest with 50% coverage ≥ 40% | ×1.0 adopted (53.6% coverage) — radar-9's ×1.5 widening was never validated and the data does not support it. OOD tiers: partial (1 flag) = extrapolation, major (2+ flags) = unsupported, never a production FARM; Polymarket is partial (unseen chain) |
+| LOPO influence analysis | refit without each of 70 comps; max |Δ predicted log| over the board; error by category/chain/TVL tercile | FLAG: dropping rain moves some board row by 0.68 dex; obol moves the slope by 0.12. The board hinges on the rain outlier ($2.65B mcap, 400× TVL) |
+| Conformal slices | coverage 50/80/90% by regime, TVL band, age band, OOD vs in-distribution, with Wilson 95% CIs; 90% quantile = 64th of 70, SE ≈ 0.036 | regime 43–61%, TVL 39–63%, age 46–57% at 50% — all within CI of nominal. The in-distribution OOD slice is EMPTY by construction (chronological folds make every test row age-OOD), so the OOD-vs-in-distribution comparison is vacuous and the multiplier validation covers age-OOD rows only — documented as a limitation |
+| Two functions split on the dashboard | valuation radar (conditional value + uncertainty) vs farming decision engine | the radar ranks 198 protocols identically under every distribution; the engine reports 0 farms and never lowers a threshold to look active |
+| Floor documented, unchanged | $10M 0.3090 vs $25M 0.3203 on the selection metric; per-fold floor choice 0.4191 pooled | $25M stays locked — the 0.0113 dex edge on 28 rows is within noise |
+| Leakage tests updated to v1.3 | policy-aware farm check, 3-policy gate test, tournament invariants, horizon cohort, multiplier adoption rule, LOPO, conformal slices, capped sim, OOD tiers | 39 checks pass (see `scripts/leakage-test.ts`); farm-count checks never require ≥ 1 farm |
+| Dashboard reworked to v1.3 | analytic EV now uses the capped lognormal mean (closed form) + capped quantiles; analytic gate implements all three v1.3 policies; new sections for the tournament, horizon cohort, multiplier tests, LOPO, conformal slices | lede, model panel, gate test, OOD, EV audit and detail view all show v1.3 numbers; sandbox re-ranks with the same capped gate |
+| Screenshots regenerated | headless Chromium, 1-board + 2-detail at 1440×900, 3-filtered at 1440×1250 | all three < 512 KiB; visual check passed, no overlap or broken text |
+
 ## Run it
 
 ```sh
@@ -412,8 +433,8 @@ node scripts/leakage-test.ts --input <snapshot.json>
 
 - `main.ts` — entrypoint: reads the snapshot, validates it, writes the board, data, dashboard, screenshots and dossier.
 - `lib/model.ts` — the fitted regression, the walk-forward validation, the farm plans with verdicts, and the board checks.
-- `EVALUATION_CHARTER.md` — the locked evaluation charter (v1.2): question, target, population, splits, success rule, tuning boundary, leakage checks. Radar-8's v1.1 charter is preserved in the radar-8 freeze.
-- `scripts/leakage-test.ts` — the leakage-injection self-test (24 checks; not copied to /output).
+- `EVALUATION_CHARTER.md` — the locked evaluation charter (v1.3): question, target, population, splits, success rule, tuning boundary, leakage checks. Radar-9's v1.2 charter is preserved in the radar-9 freeze; radar-8's v1.1 charter in the radar-8 freeze.
+- `scripts/leakage-test.ts` — the leakage-injection self-test (39 checks; not copied to /output).
 - `dashboard/` — the static page (index.html, app.css, app.js). Renders with no network.
 - `screenshots/` — the board, a protocol's detail view, a filtered view.
 - `vendor/makefun-board.ts` — make.fun's dossier library (vendored from the kit).
