@@ -1,4 +1,4 @@
-// Token Radar's model (radar-5): one sealed snapshot in, one ranked board out.
+// Token Radar's model (radar-6): one sealed snapshot in, one ranked board out.
 //
 // The board covers every protocol the snapshot's watchlist names (the floor, never a ceiling)
 // and every other pre-token protocol the snapshot carries: the early rows the radar exists to
@@ -11,7 +11,15 @@
 //
 // Implied value is FITTED, not hand-set, in two parts:
 //  1. Value if it launches: a Huber-fitted log-log regression, fitted at run time on the
-//     snapshot's own live-token comparables:
+//     snapshot's own live-token comparables: protocols with a token trading, TVL and market
+//     cap positive, CEX excluded — and, since radar-6, only protocols the board could rank.
+//     The same wrapped / staked / bridged / versioned / exchange-product exclusions the
+//     board applies to pre-token protocols are applied to the training set, so the curve is
+//     fitted on the population it prices: a canonical bridge's TVL is bridged assets, not
+//     its own value, and a chain token counted on its bridge (or one token counted on two
+//     versions of a protocol) teaches the curve the wrong relation. No protocol name is
+//     special-cased: the exclusion is the board's own rule, applied uniformly by category
+//     and name pattern.
 //       log10(V) = b0 + b1*log10(tvl + $25M) + b2*log(1 + growth) + adjustments
 //       growth = clamp(change_7d, -50%, +200%) as a fraction; the growth coefficient is
 //       floored at zero — this snapshot's week was flat/down, so growth carries no positive
@@ -26,17 +34,20 @@
 //       zero by n/(n+3), so a group with one or two comps moves the price a little and a
 //       group with fifteen moves it a lot.
 //  2. Launch odds: a seasoning curve, a logistic fit of "has a token" on log10(age+1) over
-//     all 645 dated protocols in the snapshot (not just the 83 training comps). Older
+//     all 645 dated protocols in the snapshot (not just the training comps). Older
 //     protocols are more likely to have launched; an unlisted age takes the base rate.
 //       implied_value_usd = value_if_launches x launch_odds
 //     Age left the regression: it now prices launch likelihood, not size.
 //
 // The fit is validated three ways at run time and the dashboard shows all three: the
-// walk-forward split (oldest 70% fit, newest 30% tested), a stratified walk-forward split
-// (dated and undated comps each split 70/30, so the undated third of the set is scored too),
-// and a 5-fold cross-validation with a fixed-seed shuffle. A 200-refit bootstrap (fixed
-// seed) combined with the walk-forward residual error gives the P25/P50/P75 band on every
-// row; the dashboard reports how often the band held on the live comparables out of sample.
+// walk-forward split (dated comparables only: the oldest 70% by listing date fit, the
+// newest 30% tested — a protocol with no listing date has no position in time, so it
+// cannot be walk-forwarded and is not placed in either side), a stratified walk-forward
+// split (dated and undated comps each split 70/30, so the undated part of the set is
+// scored too, and its error is reported separately), and a 5-fold cross-validation with
+// a fixed-seed shuffle. A 200-refit bootstrap (fixed seed) combined with the walk-forward
+// residual error gives the P25/P50/P75 band on every row; the dashboard reports how often
+// the band held on the live comparables out of sample.
 // Every farm plan carries a verdict — farm, marginal or skip — from its break-even launch
 // odds: the launch probability at which a standard $10,000 deposit (plus gas and opportunity
 // cost) breaks even against an assumed 0.25% share of the launch value. No protocol name is
@@ -97,7 +108,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-5';
+export const MODEL_VERSION = 'radar-6';
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -133,6 +144,9 @@ export interface Validation {
   r2: number;
   oos_median_abs_log_err: number;
   oos_stratified: number;
+  oos_undated: number;
+  n_dated_comps: number;
+  n_undated_comps: number;
   cv_median_abs_log_err: number;
   bootstrap_sd: number;
   band_halfwidth_dex: number;
@@ -394,10 +408,10 @@ export function fitHuber(rows: SnapshotProtocol[], asOf: string, model: ModelCon
   return beta;
 }
 
-/** The live-token comparables the regression trains on: a token that trades, TVL and cap positive, not a CEX. */
+/** The live-token comparables the regression trains on: a token that trades, TVL and cap positive, not a CEX — and only protocols the board could rank (see isComparable): the training population is the population the curve prices. */
 export function liveComps(snapshot: Snapshot): SnapshotProtocol[] {
   return snapshot.protocols.filter(
-    (p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0 && p.category !== 'CEX',
+    (p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0 && p.category !== 'CEX' && isComparable(p),
   );
 }
 
@@ -590,13 +604,15 @@ export interface FittedModel {
 
 /**
  * Fit the regression on the live comparables and validate it three ways, all at run time:
- *  - walk-forward: sort the comps by listed_at (unlisted last, ties by slug), fit on the
- *    oldest 70%, test on the newest 30%. The out-of-sample error is the median absolute
- *    log10 error on the test set, predicted with the training fit and the training set's own
- *    group adjustments — no look-ahead.
+ *  - walk-forward: sort the dated comps by listed_at, fit on the oldest 70%, test on the
+ *    newest 30%. The out-of-sample error is the median absolute log10 error on the test
+ *    set, predicted with the training fit and the training set's own group adjustments —
+ *    no look-ahead. Undated comps are excluded here: with no listing date they have no
+ *    position in time, and radar-5's nulls-last ordering put all of them in the test set,
+ *    so its walk-forward error was the undated error, not a forward error.
  *  - stratified walk-forward: dated and undated comps are each split 70/30 (dated by listing
- *    date, undated by slug), so the undated third of the set is scored too instead of landing
- *    whole in the test set.
+ *    date, undated by slug), so the undated part of the set is scored too instead of landing
+ *    whole in the test set; the undated test error is reported on its own (oos_undated).
  *  - 5-fold cross-validation: the comps are shuffled once with a fixed seed and dealt into
  *    five folds; each fold is scored by a fit on the other four. The per-comp cross-validated
  *    predictions are kept: they are what the P25/P75 band is checked against.
@@ -606,11 +622,13 @@ export interface FittedModel {
  *  - the OLS benchmark: the old least-squares model on the same features, scored on the
  *    same 70/30 split and the same five folds, so the Huber fit is always shown against
  *    the model it replaced.
- * A 200-refit bootstrap (fixed seed, resampling the comps with replacement) combined with the
- * walk-forward residual error gives the band half-width: 0.6745 * sqrt(bootstrap_sd^2 +
- * oos^2) dex, so P25/P75 sit one quartile each side of the prediction. range_holds is the
- * share of live comparables whose true value fell inside their band, scored on the
- * cross-validated predictions — an out-of-sample calibration check, not an in-sample one.
+ * A 200-refit bootstrap (fixed seed, resampling the comps with replacement) combined with
+ * the stratified out-of-sample error gives the band half-width: 0.6745 *
+ * sqrt(bootstrap_sd^2 + stratified_oos^2) dex, so P25/P75 sit one quartile each side of
+ * the prediction. The stratified error is used because the band is printed on dated and
+ * undated rows alike. range_holds is the share of live comparables whose true value fell
+ * inside their band, scored on the cross-validated predictions — an out-of-sample
+ * calibration check, not an in-sample one.
  * The growth coefficient is floored at zero in every fit: a negative carry in a flat week is
  * noise, and the model never pays a protocol for shrinking.
  */
@@ -640,23 +658,29 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
   const full = fitOne(comps);
   const r2 = rSquared(comps, asOf, full.beta, full.adj, full.chainAdj, model);
 
-  const ordered = [...comps].sort((a, b) => {
-    const la = a.listed_at ?? '9999-99-99';
-    const lb = b.listed_at ?? '9999-99-99';
-    return la < lb ? -1 : la > lb ? 1 : a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0;
-  });
-  const nTrain = Math.floor(ordered.length * 0.7);
-  const train = ordered.slice(0, nTrain);
-  const test = ordered.slice(nTrain);
+  // Walk-forward, dated comparables only: sort by listing date, fit on the oldest 70%,
+  // test on the newest 30%. A comparable with no listing date has no position in time:
+  // radar-5 sorted it last, so all 32 undated comps landed whole in the test set and the
+  // "walk-forward" error was really the undated error. Undated comps are still scored —
+  // in the stratified split below and in cross-validation — and their stratified-test
+  // error is reported separately as oos_undated, not hidden inside the walk-forward.
+  const datedOrdered = [...comps]
+    .filter((p) => p.listed_at !== null)
+    .sort((a, b) => (a.listed_at! < b.listed_at! ? -1 : a.listed_at! > b.listed_at! ? 1 : a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+  const nTrain = Math.floor(datedOrdered.length * 0.7);
+  const train = datedOrdered.slice(0, nTrain);
+  const test = datedOrdered.slice(nTrain);
   const wf = fitOne(train);
   const oos = medianAbsErr(test, wf.beta, wf.adj, wf.chainAdj);
 
-  const dated = ordered.filter((p) => p.listed_at !== null);
+  const dated = datedOrdered;
   const undated = [...comps].filter((p) => p.listed_at === null).sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
   const stratTrain = [...dated.slice(0, Math.floor(dated.length * 0.7)), ...undated.slice(0, Math.floor(undated.length * 0.7))];
   const stratTest = [...dated.slice(Math.floor(dated.length * 0.7)), ...undated.slice(Math.floor(undated.length * 0.7))];
   const strat = fitOne(stratTrain);
   const oosStratified = medianAbsErr(stratTest, strat.beta, strat.adj, strat.chainAdj);
+  const stratUndatedTest = stratTest.filter((p) => p.listed_at === null);
+  const oosUndated = medianAbsErr(stratUndatedTest, strat.beta, strat.adj, strat.chainAdj);
 
   const shuffled = seededShuffle(comps, 20261118);
   const folds: SnapshotProtocol[][] = [[], [], [], [], []];
@@ -747,7 +771,12 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
     })
     .sort((a, b) => a - b);
   const bootstrapSd = median(sds) ?? 0;
-  const bandHalfwidth = 0.6745 * Math.sqrt(bootstrapSd ** 2 + oos ** 2);
+  // The band's error term is the stratified out-of-sample error, not the dated-only
+  // walk-forward error: the band is printed on every board row, dated and undated alike,
+  // so its miss must be measured on the whole comparable population. (Radar-5 used the
+  // walk-forward error; with the walk-forward now dated-only that would understate the
+  // miss for undated rows and the band held only ~39% of comps in cross-validation.)
+  const bandHalfwidth = 0.6745 * Math.sqrt(bootstrapSd ** 2 + oosStratified ** 2);
   const held = comps.filter((p) => Math.abs(Math.log10(p.mcap_usd!) - cvPred.get(p.slug)!) <= bandHalfwidth).length;
   const rangeHolds = comps.length > 0 ? held / comps.length : 0;
   const seasoning = fitSeasoning(snapshot);
@@ -765,6 +794,9 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
     r2: round4(r2),
     oos_median_abs_log_err: round4(oos),
     oos_stratified: round4(oosStratified),
+    oos_undated: round4(oosUndated),
+    n_dated_comps: dated.length,
+    n_undated_comps: undated.length,
     cv_median_abs_log_err: round4(cv),
     bootstrap_sd: round4(bootstrapSd),
     band_halfwidth_dex: round4(bandHalfwidth),
@@ -862,6 +894,23 @@ export function isPreToken(p: SnapshotProtocol): boolean {
 export function isRankable(p: SnapshotProtocol): boolean {
   return (
     isPreToken(p) &&
+    !WRAPPED_PRODUCT_CATEGORIES.has(p.category ?? '') &&
+    !VERSIONED.test(p.name) &&
+    !EXCHANGE_PREFIX.test(p.name) &&
+    !WRAPPED_WORD.test(p.name)
+  );
+}
+
+/**
+ * Whether a live-token protocol may train the curve: the rankability rule without the
+ * pre-token condition (a comparable has a token by definition). A bridge, a liquid-staking
+ * product, a versioned pool or an exchange product is not a comparable for a launch: its
+ * market cap is some other token's (its chain's, its staked asset's, its v3's), while its
+ * TVL is the product's own — the two numbers are not the launch relation the curve fits.
+ * Applied uniformly by category and name pattern, never by slug.
+ */
+export function isComparable(p: SnapshotProtocol): boolean {
+  return (
     !WRAPPED_PRODUCT_CATEGORIES.has(p.category ?? '') &&
     !VERSIONED.test(p.name) &&
     !EXCHANGE_PREFIX.test(p.name) &&

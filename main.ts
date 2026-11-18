@@ -1,4 +1,4 @@
-// Token Radar's entrypoint (radar-5, Node 22, standard library only).
+// Token Radar's entrypoint (radar-6, Node 22, standard library only).
 //
 // Reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), scores every
 // pre-token protocol with the Huber-fitted log-log regression in lib/model.ts, writes the ranked
