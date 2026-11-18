@@ -1,4 +1,4 @@
-// Token Radar's dashboard (radar-3). It reads window.RADAR (written beside dashboard/ by
+// Token Radar's dashboard (radar-4). It reads window.RADAR (written beside dashboard/ by
 // main.ts) and renders the ranked board, a filterable table, a per-protocol detail drawer with
 // the fitted model's own inputs and the protocol's farm plan with its verdict, and a model
 // sandbox that re-ranks the board live. No network: every byte it shows is in data.js.
@@ -419,15 +419,20 @@
     var W = 560, H = 260, L = 44, R = 12, T = 10, B = 28;
     function px(x) { return (L + ((x - x0) / (x1 - x0 || 1)) * (W - L - R)).toFixed(1); }
     function py(y) { return (T + (1 - (y - y0) / (y1 - y0 || 1)) * (H - T - B)).toFixed(1); }
-    var lineY = function (x) { return FIT.intercept + FIT.coef_log_tvl * x + FIT.coef_growth * FIT.median_growth + FIT.coef_log_age * FIT.median_log_age; };
-    var s = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" role="img" aria-label="Scatter of log TVL against log market cap for the live comparables, with the fitted line">';
+    var lineY = function (x) { return FIT.intercept + FIT.coef_log_tvl * Math.log10(Math.pow(10, x) + FIT.size_floor_usd) + FIT.coef_growth * FIT.median_growth + FIT.coef_log_age * FIT.median_log_age; };
+    var s = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" role="img" aria-label="Scatter of log TVL against log market cap for the live comparables, with the fitted curve">';
     s += '<line x1="' + L + '" y1="' + (H - B) + '" x2="' + (W - R) + '" y2="' + (H - B) + '" stroke="#22304a"/>';
     s += '<line x1="' + L + '" y1="' + T + '" x2="' + L + '" y2="' + (H - B) + '" stroke="#22304a"/>';
-    s += '<line x1="' + px(x0) + '" y1="' + py(lineY(x0)) + '" x2="' + px(x1) + '" y2="' + py(lineY(x1)) + '" stroke="#f5b544" stroke-width="2"/>';
+    var linePts = [];
+    for (var k = 0; k <= 24; k++) {
+      var lx = x0 + ((x1 - x0) * k) / 24;
+      linePts.push(px(lx) + ',' + py(lineY(lx)));
+    }
+    s += '<polyline points="' + linePts.join(' ') + '" fill="none" stroke="#f5b544" stroke-width="2"/>';
     pts.forEach(function (p) { s += '<circle cx="' + px(p.x) + '" cy="' + py(p.y) + '" r="2.5" fill="#2ee6a8" opacity="0.7"/>'; });
     s += '<text x="' + (W / 2) + '" y="' + (H - 6) + '" fill="#8b9bb4" font-size="11" text-anchor="middle">log10 TVL</text>';
     s += '<text x="12" y="' + (H / 2) + '" fill="#8b9bb4" font-size="11" text-anchor="middle" transform="rotate(-90 12 ' + (H / 2) + ')">log10 mcap</text>';
-    s += '<text x="' + (W - R) + '" y="' + (T + 10) + '" fill="#f5b544" font-size="11" text-anchor="end">fitted line at median growth and age</text>';
+    s += '<text x="' + (W - R) + '" y="' + (T + 10) + '" fill="#f5b544" font-size="11" text-anchor="end">fitted curve at median growth and age</text>';
     s += '</svg>';
     return s;
   }
@@ -440,7 +445,15 @@
         el('td', { text: c.category }),
         el('td', { class: 'num', text: String(c.count) }),
         el('td', { class: 'num', text: (c.adjustment >= 0 ? '+' : '') + c.adjustment.toFixed(2) + ' dex' }),
-        el('td', { text: c.basis === 'category' ? 'median residual of its live protocols' : 'global fit (fewer than ' + m.min_comparables + ' comps)' })
+        el('td', { text: c.basis === 'category' ? 'shrunk median residual of its live protocols' : 'global fit (no comps)' })
+      );
+    });
+    var chainRows = DATA.chain_adjustments.filter(function (c) { return c.count >= 3; }).map(function (c) {
+      return el('tr', null,
+        el('td', { text: c.category }),
+        el('td', { class: 'num', text: String(c.count) }),
+        el('td', { class: 'num', text: (c.adjustment >= 0 ? '+' : '') + c.adjustment.toFixed(2) + ' dex' }),
+        el('td', { text: 'shrunk median residual of its live protocols' })
       );
     });
     var scaleSlider = el('input', { type: 'range', min: '0.5', max: '2', step: '0.05', value: String(state.scale), 'aria-label': 'Fitted value scale' });
@@ -462,21 +475,24 @@
     scatter.innerHTML = scatterSvg();
     return el('section', { class: 'panel model' },
       el('h2', { text: 'How value is fitted' }),
-      el('p', { class: 'sub', text: 'An OLS log-log regression, fitted at run time on the snapshot\'s own live-token comparables — ' + FIT.n_comps + ' protocols with a token trading, TVL and market cap positive, CEX excluded. No protocol name is special-cased, and no row is hand-picked.' }),
+      el('p', { class: 'sub', text: 'A Huber-fitted log-log regression, fitted at run time on the snapshot\'s own live-token comparables — ' + FIT.n_comps + ' protocols with a token trading, TVL and market cap positive, CEX excluded. Huber down-weights the snapshot\'s own attribution quirks instead of letting one mis-counted token drag the curve, and every group adjustment below is a median residual shrunk toward zero, so a group with one or two comps moves a price a little and a group with fifteen moves it a lot. No protocol name is special-cased, and no row is hand-picked.' }),
       el('div', { class: 'formula' },
         el('b', { text: 'log10(implied)' }), ' = ', el('b', { text: String(FIT.intercept) }),
-        ' + ', el('b', { text: String(FIT.coef_log_tvl) }), ' x log10(TVL)',
+        ' + ', el('b', { text: String(FIT.coef_log_tvl) }), ' x log10(TVL + $100M)',
         ' + ', el('b', { text: String(FIT.coef_growth) }), ' x clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ')',
         ' + ', el('b', { text: String(FIT.coef_log_age) }), ' x log10(age_days + 1)',
-        ' + category adjustment; implied = round(10^predicted)'
+        ' + category adjustment + main-chain adjustment; implied = round(10^predicted)'
       ),
       el('div', { class: 'facts fit' },
         el('div', { class: 'fact' }, el('span', { text: 'In-sample R² (fitted model)' }), el('b', { text: String(v.r2) })),
         el('div', { class: 'fact' }, el('span', { text: 'Walk-forward out-of-sample error' }), el('b', { text: String(v.oos_median_abs_log_err) + ' dex (median)' })),
+        el('div', { class: 'fact' }, el('span', { text: 'Stratified walk-forward error' }), el('b', { text: String(v.oos_stratified) + ' dex (median)' })),
+        el('div', { class: 'fact' }, el('span', { text: '5-fold cross-validation error' }), el('b', { text: String(v.cv_median_abs_log_err) + ' dex (median)' })),
+        el('div', { class: 'fact' }, el('span', { text: 'Bootstrap band (200 refits, 1-sigma)' }), el('b', { text: '±' + String(v.bootstrap_sd) + ' dex' })),
         el('div', { class: 'fact' }, el('span', { text: 'Walk-forward split' }), el('b', { text: v.n_train + ' train (oldest) / ' + v.n_test + ' test (newest)' })),
         el('div', { class: 'fact' }, el('span', { text: 'Live comparables fitted' }), el('b', { text: String(FIT.n_comps) }))
       ),
-      el('p', { class: 'sub', text: 'Tested out of sample: the model is fitted on the oldest 70% of the live comparables by listing date and scored on the newest 30%, so the error above is what the fit actually achieves on protocols it never saw. A median error of ' + v.oos_median_abs_log_err + ' dex means a typical prediction is off by that many orders of magnitude either way — the ranking is a guide for where to look first, not a price. Age is the time since the protocol was first listed, the best record of how long it has run with no token; an unlisted age uses ' + m.unknown_age_days + ' days. Wrapped, staked and bridged products of tokens that already trade are set aside, not ranked: their token already exists, so there is no launch to price.' }),
+      el('p', { class: 'sub', text: 'Tested out of sample three ways: the model is fitted on the oldest 70% of the live comparables by listing date and scored on the newest 30%; the same split is repeated with dated and undated protocols each split 70/30, so the third of the set with no listing date is scored too; and a 5-fold cross-validation shuffles the set once with a fixed seed. A median error of ' + v.oos_median_abs_log_err + ' dex means a typical prediction is off by that many orders of magnitude either way, and the bootstrap band of ±' + v.bootstrap_sd + ' dex is how much the fitted value itself wobbles when the comparables are resampled — the ranking is a guide for where to look first, not a price. The $100M floor keeps the curve from pricing a small protocol at zero for being small: TVL below $100M is noisy in the snapshot. Age is the time since the protocol was first listed, the best record of how long it has run with no token; an unlisted age uses ' + m.unknown_age_days + ' days. Wrapped, staked and bridged products of tokens that already trade are set aside, not ranked: their token already exists, so there is no launch to price.' }),
       scatter,
       el('div', { class: 'sandbox' },
         el('label', null, 'Fitted value scale ', scaleOut, scaleSlider),
@@ -489,6 +505,13 @@
         el('table', { class: 'comps' },
           el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Category' }), el('th', { scope: 'col', text: 'Live comps' }), el('th', { scope: 'col', text: 'Adjustment' }), el('th', { scope: 'col', text: 'Basis' }))),
           el('tbody', null, compRows)
+        )
+      ),
+      el('h3', { text: 'Main-chain adjustments the model priced on (chains with 3+ comps)' }),
+      el('div', { class: 'table-wrap' },
+        el('table', { class: 'comps' },
+          el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Main chain' }), el('th', { scope: 'col', text: 'Live comps' }), el('th', { scope: 'col', text: 'Adjustment' }), el('th', { scope: 'col', text: 'Basis' }))),
+          el('tbody', null, chainRows)
         )
       )
     );
@@ -522,14 +545,15 @@
     dialog.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Implied value — fitted' }),
       el('div', { class: 'equation' },
-        el('div', null, el('span', { text: 'TVL (log10)' }), el('b', { class: 'num', text: fmtUsd(row.tvl_usd) + ' (' + Math.log10(row.tvl_usd).toFixed(2) + ')' })),
+        el('div', null, el('span', { text: 'TVL + $100M floor (log10)' }), el('b', { class: 'num', text: fmtUsd(row.tvl_usd) + ' (' + Math.log10(row.tvl_usd + FIT.size_floor_usd).toFixed(2) + ')' })),
         el('div', null, el('span', { text: 'Seven-day growth (clamped)' }), el('b', { class: 'num', text: fmtPct(row.change_7d) + ' -> ' + growthPct })),
         el('div', null, el('span', { text: 'Age with no token (log10(age+1))' }), el('b', { class: 'num', text: fmtAge(row.age_days) + ' (' + Math.log10(age + 1).toFixed(2) + ')' })),
         el('div', null, el('span', { text: 'Category adjustment' }), el('b', { class: 'num', text: (row.category_adjustment >= 0 ? '+' : '') + row.category_adjustment.toFixed(2) + ' dex' })),
+        el('div', null, el('span', { text: 'Main-chain adjustment' }), el('b', { class: 'num', text: (row.chain_adjustment >= 0 ? '+' : '') + row.chain_adjustment.toFixed(2) + ' dex' })),
         el('div', null, el('span', { text: 'Predicted log10 value' }), el('b', { class: 'num', text: String(row.predicted_log_value.toFixed(3)) })),
         el('div', null, el('span', { text: 'Implied value (10^predicted)' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) }))
       ),
-      el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': log10(value) = ' + FIT.intercept + ' + ' + FIT.coef_log_tvl + ' x log10(TVL) + ' + FIT.coef_growth + ' x growth + ' + FIT.coef_log_age + ' x log10(age+1) + adjustment. The page recomputes this row as ' + fmtUsd(canonical) + (canonical === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' Walk-forward out-of-sample error ' + DATA.validation.oos_median_abs_log_err + ' dex, R² ' + DATA.validation.r2 + '. This is an estimate, not a price.' }),
+      el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': log10(value) = ' + FIT.intercept + ' + ' + FIT.coef_log_tvl + ' x log10(TVL + $100M) + ' + FIT.coef_growth + ' x growth + ' + FIT.coef_log_age + ' x log10(age+1) + adjustments. The page recomputes this row as ' + fmtUsd(canonical) + (canonical === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' Walk-forward out-of-sample error ' + DATA.validation.oos_median_abs_log_err + ' dex, stratified ' + DATA.validation.oos_stratified + ' dex, 5-fold CV ' + DATA.validation.cv_median_abs_log_err + ' dex, R² ' + DATA.validation.r2 + '. This is an estimate, not a price.' }),
       el('p', { class: 'sub', text: compNote })
     ));
     dialog.appendChild(el('section', { class: 'detail-section' },

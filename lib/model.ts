@@ -1,4 +1,4 @@
-// Token Radar's model (radar-3): one sealed snapshot in, one ranked board out.
+// Token Radar's model (radar-4): one sealed snapshot in, one ranked board out.
 //
 // The board covers every protocol the snapshot's watchlist names (the floor, never a ceiling)
 // and every other pre-token protocol the snapshot carries: the early rows the radar exists to
@@ -9,19 +9,30 @@
 // Protocols whose token already trades are kept apart and shown with the market's own values,
 // never mixed into the ranked board.
 //
-// Implied value is FITTED, not hand-set: an OLS log-log regression, fitted at run time on the
-// snapshot's own live-token comparables, prices every pre-token protocol:
+// Implied value is FITTED, not hand-set: a Huber-fitted log-log regression, fitted at run
+// time on the snapshot's own live-token comparables, prices every pre-token protocol:
 //
-//   log10(mcap) = b0 + b1*log10(tvl) + b2*growth + b3*log10(age_days+1) + category adjustment
+//   log10(mcap) = b0 + b1*log10(tvl + $100M) + b2*growth + b3*log10(age_days+1)
+//                 + category adjustment + main-chain adjustment
 //   growth = clamp(change_7d, -60, 120); age null -> 365 days
-//   category adjustment = median residual of the category (<3 comps -> 0)
+//   size floor: TVL below $100M is noisy in the snapshot, so the curve saturates there —
+//   a small protocol is never priced at zero for being small.
+//   Huber (IRLS, delta 1.345, MAD scale): the snapshot's own attribution quirks — a chain
+//   token counted on its bridge, one token counted on two versions of a protocol — are
+//   down-weighted instead of dragging the fit.
+//   group adjustments: the median residual of a category / a main chain, shrunk toward zero
+//   by n/(n+3), so a group with one or two comps moves the price a little and a group with
+//   fifteen moves it a lot. Full-size adjustments failed the walk-forward test; shrunk ones
+//   did not.
 //   implied = round(10^predicted), clamped to [1, 100_000_000_000]
 //
-// The fit is validated walk-forward at run time (oldest 70% fit, newest 30% tested) and the
-// dashboard shows the coefficients, the in-sample R^2 and the out-of-sample error, so a reader
-// can see how much the model is worth. Every farm plan carries a verdict — farm, marginal or
-// skip — from the fitted value against the plan's own cost. No protocol name is ever
-// special-cased: the same function scores every row.
+// The fit is validated three ways at run time and the dashboard shows all three: the
+// walk-forward split (oldest 70% fit, newest 30% tested, the radar-3 protocol), a stratified
+// walk-forward split (dated and undated comps each split 70/30, so the undated third of the
+// set is scored too), and a 5-fold cross-validation with a fixed-seed shuffle. A 200-refit
+// bootstrap (fixed seed) gives the 1-sigma band on a predicted log value. Every farm plan
+// carries a verdict — farm, marginal or skip — from the fitted value against the plan's own
+// cost. No protocol name is ever special-cased: the same function scores every row.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -52,6 +63,8 @@ export interface ModelConstants {
   growth_cap: number;
   unknown_age_days: number;
   min_comparables: number;
+  size_floor_usd: number;
+  shrink_k: number;
   value_min: number;
   value_max: number;
   farm_value: number;
@@ -65,6 +78,8 @@ export const MODEL: ModelConstants = {
   growth_cap: 120,
   unknown_age_days: 365,
   min_comparables: 3,
+  size_floor_usd: 100_000_000,
+  shrink_k: 3,
   value_min: 1,
   value_max: 100_000_000_000,
   farm_value: 20_000_000,
@@ -74,7 +89,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-3';
+export const MODEL_VERSION = 'radar-4';
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -94,6 +109,7 @@ export interface Fit {
   coef_growth: number;
   coef_log_age: number;
   n_comps: number;
+  size_floor_usd: number;
   median_growth: number;
   median_log_age: number;
 }
@@ -102,6 +118,9 @@ export interface Fit {
 export interface Validation {
   r2: number;
   oos_median_abs_log_err: number;
+  oos_stratified: number;
+  cv_median_abs_log_err: number;
+  bootstrap_sd: number;
   n_train: number;
   n_test: number;
 }
@@ -138,6 +157,7 @@ export interface BoardRow {
     category_multiple: number;
     predicted_log_value: number;
     category_adjustment: number;
+    chain_adjustment: number;
     comparable_count: number;
     comparable_basis: 'category' | 'global';
     growth_pct: number;
@@ -166,6 +186,7 @@ export interface RadarRow {
   category_multiple: number;
   predicted_log_value: number;
   category_adjustment: number;
+  chain_adjustment: number;
 }
 
 /** A live-token protocol: it already trades, so the board shows the market's own value, not a model's. */
@@ -200,6 +221,7 @@ export interface RadarData {
   fit: Fit;
   validation: Validation;
   comparables: Comparable[];
+  chain_adjustments: Comparable[];
   scatter: ScatterPoint[];
   rows: RadarRow[];
   live: LiveRow[];
@@ -239,11 +261,11 @@ export function ageDays(asOf: string, listedAt: string | null): number | null {
   return Math.max(0, Math.floor((a - b) / DAY_MS));
 }
 
-/** The regression's features for one protocol: [1, log10 TVL, clamped growth, log10(age+1)]. */
+/** The regression's features for one protocol: [1, log10(TVL + size floor), clamped growth, log10(age+1)]. */
 export function features(p: SnapshotProtocol, asOf: string, model: ModelConstants = MODEL): number[] {
   const age = ageDays(asOf, p.listed_at);
   const growth = Math.min(model.growth_cap, Math.max(model.growth_floor, finite(p.change_7d, 0)));
-  return [1, Math.log10(Math.max(1, p.tvl_usd)), growth, Math.log10((age ?? model.unknown_age_days) + 1)];
+  return [1, Math.log10(Math.max(1, p.tvl_usd) + model.size_floor_usd), growth, Math.log10((age ?? model.unknown_age_days) + 1)];
 }
 
 /** Solve A x = b by Gaussian elimination with partial pivoting; deterministic, no libraries. */
@@ -266,20 +288,56 @@ export function solveLinear(a: number[][], b: number[]): number[] {
   return m.map((row, i) => row[n]! / row[i]!);
 }
 
-/** Ordinary least squares for log10(mcap) on the features: the normal equations, solved above. */
-export function fitOls(rows: SnapshotProtocol[], asOf: string, model: ModelConstants = MODEL): number[] {
+/** Weighted least squares for log10(mcap) on the features: the normal equations, solved above. */
+export function fitWeightedOls(
+  rows: SnapshotProtocol[],
+  weights: number[],
+  asOf: string,
+  model: ModelConstants = MODEL,
+): number[] {
   const k = 4;
   const xtx: number[][] = Array.from({ length: k }, () => Array(k).fill(0));
   const xty: number[] = Array(k).fill(0);
-  for (const p of rows) {
+  rows.forEach((p, r) => {
+    const w = weights[r] ?? 1;
     const x = features(p, asOf, model);
     const y = Math.log10(p.mcap_usd!);
     for (let i = 0; i < k; i++) {
-      xty[i]! += x[i]! * y;
-      for (let j = 0; j < k; j++) xtx[i]![j]! += x[i]! * x[j]!;
+      xty[i]! += w * x[i]! * y;
+      for (let j = 0; j < k; j++) xtx[i]![j]! += w * x[i]! * x[j]!;
     }
-  }
+  });
   return solveLinear(xtx, xty);
+}
+
+/**
+ * Huber's robust fit (iteratively reweighted least squares, delta 1.345, MAD scale): the
+ * snapshot's own attribution quirks — a chain token counted on its bridge, one token counted
+ * on two versions of a protocol — are down-weighted instead of dragging the curve. Starts at
+ * the OLS fit, stops when the coefficients stop moving or after 60 rounds. Deterministic:
+ * the same rows always give the same beta.
+ */
+export function fitHuber(rows: SnapshotProtocol[], asOf: string, model: ModelConstants = MODEL): number[] {
+  const delta = 1.345;
+  let beta = fitWeightedOls(rows, rows.map(() => 1), asOf, model);
+  for (let iter = 0; iter < 60; iter++) {
+    const residuals = rows.map((p) => {
+      const x = features(p, asOf, model);
+      return Math.log10(p.mcap_usd!) - beta.reduce((s, b, i) => s + b * x[i]!, 0);
+    });
+    const med = median([...residuals].sort((a, b) => a - b)) ?? 0;
+    const absDev = residuals.map((r) => Math.abs(r - med)).sort((a, b) => a - b);
+    const scale = 1.4826 * (median(absDev) ?? 0) || 1;
+    const weights = residuals.map((r) => {
+      const u = Math.abs(r - med) / (delta * scale);
+      return u <= 1 ? 1 : 1 / u;
+    });
+    const next = fitWeightedOls(rows, weights, asOf, model);
+    const moved = Math.max(...next.map((b, i) => Math.abs(b - beta[i]!)));
+    beta = next;
+    if (moved < 1e-10) break;
+  }
+  return beta;
 }
 
 /** The live-token comparables the regression trains on: a token that trades, TVL and cap positive, not a CEX. */
@@ -289,15 +347,23 @@ export function liveComps(snapshot: Snapshot): SnapshotProtocol[] {
   );
 }
 
+/** A protocol's main chain: the first chain it names, or 'none'. */
+export function mainChain(p: SnapshotProtocol): string {
+  return p.chains.length > 0 ? p.chains[0]! : 'none';
+}
+
 /**
- * One category's adjustment: the median residual (log10 mcap minus the regression's prediction)
- * of its live comparables. A category with fewer than min_comparables comps falls back to 0,
- * i.e. the global fit with no adjustment.
+ * One group's adjustment: the median residual (log10 mcap minus the regression's prediction)
+ * of its live comparables, shrunk toward zero by n/(n+shrink_k). A group with one or two
+ * comps moves the price a little; a group with fifteen moves it a lot. A group with no comps
+ * in the fitted rows gets 0 with basis 'global' — the global fit, no adjustment. Full-size
+ * adjustments failed the walk-forward test; shrunk ones did not.
  */
-export function categoryAdjustments(
+export function groupAdjustments(
   rows: SnapshotProtocol[],
   asOf: string,
   beta: number[],
+  keyOf: (p: SnapshotProtocol) => string,
   model: ModelConstants = MODEL,
 ): Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }> {
   const residuals = new Map<string, number[]>();
@@ -305,42 +371,48 @@ export function categoryAdjustments(
     const x = features(p, asOf, model);
     const pred = beta.reduce((s, b, i) => s + b * x[i]!, 0);
     const r = Math.log10(p.mcap_usd!) - pred;
-    const key = p.category ?? 'Other';
+    const key = keyOf(p);
     const list = residuals.get(key);
     if (list === undefined) residuals.set(key, [r]);
     else list.push(r);
   }
   const out = new Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }>();
-  for (const [category, rs] of residuals) {
+  for (const [key, rs] of residuals) {
     rs.sort((a, b) => a - b);
-    out.set(category, {
-      adjustment: rs.length >= model.min_comparables ? round4(median(rs) ?? 0) : 0,
+    out.set(key, {
+      adjustment: round4((median(rs) ?? 0) * (rs.length / (rs.length + model.shrink_k))),
       count: rs.length,
-      basis: rs.length >= model.min_comparables ? 'category' : 'global',
+      basis: 'category',
     });
   }
   return out;
 }
 
-/** The fitted log10 value of one protocol: the regression plus its category's adjustment. */
+/** The fitted log10 value of one protocol: the regression plus its category and chain adjustments. */
 export function predictLog(
   p: SnapshotProtocol,
   asOf: string,
   beta: number[],
   adjustments: Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }>,
+  chainAdjustments: Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }>,
   model: ModelConstants = MODEL,
 ): number {
   const x = features(p, asOf, model);
   const base = beta.reduce((s, b, i) => s + b * x[i]!, 0);
-  return base + (adjustments.get(p.category ?? 'Other')?.adjustment ?? 0);
+  return (
+    base +
+    (adjustments.get(p.category ?? 'Other')?.adjustment ?? 0) +
+    (chainAdjustments.get(mainChain(p))?.adjustment ?? 0)
+  );
 }
 
-/** R^2 of the fitted model (regression plus category adjustments) on the given rows. */
+/** R^2 of the fitted model (regression plus group adjustments) on the given rows. */
 export function rSquared(
   rows: SnapshotProtocol[],
   asOf: string,
   beta: number[],
   adjustments: Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }>,
+  chainAdjustments: Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }>,
   model: ModelConstants = MODEL,
 ): number {
   if (rows.length === 0) return 0;
@@ -349,34 +421,88 @@ export function rSquared(
   let ssTot = 0;
   let ssRes = 0;
   rows.forEach((p, i) => {
-    const e = ys[i]! - predictLog(p, asOf, beta, adjustments, model);
+    const e = ys[i]! - predictLog(p, asOf, beta, adjustments, chainAdjustments, model);
     ssTot += (ys[i]! - mean) ** 2;
     ssRes += e * e;
   });
   return ssTot === 0 ? 0 : 1 - ssRes / ssTot;
 }
 
-/** The whole fit: the regression, its category adjustments, the walk-forward validation and the scatter. */
+/** A seeded deterministic PRNG (mulberry32): the shuffle and the bootstrap below are pure arithmetic, so every run refits the same numbers. */
+export function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** A seeded in-place Fisher-Yates shuffle; the same seed always gives the same order. */
+export function seededShuffle<T>(items: T[], seed: number): T[] {
+  const rand = mulberry32(seed);
+  const out = [...items];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    const tmp = out[i]!;
+    out[i] = out[j]!;
+    out[j] = tmp;
+  }
+  return out;
+}
+
+/** The whole fit: the regression, its category and chain adjustments, the validations and the scatter. */
 export interface FittedModel {
   beta: number[];
   adjustments: Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }>;
+  chainAdjustments: Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }>;
   fit: Fit;
   validation: Validation;
   comparables: Comparable[];
+  chainComparables: Comparable[];
   scatter: ScatterPoint[];
 }
 
 /**
- * Fit the regression on the live comparables and validate it walk-forward: sort the comps by
- * listed_at (unlisted last, ties by slug), fit on the oldest 70%, test on the newest 30%.
- * The out-of-sample error is the median absolute log10 error on the test set, predicted with
- * the training fit and the training set's own category adjustments — no look-ahead.
+ * Fit the regression on the live comparables and validate it three ways, all at run time:
+ *  - walk-forward (the radar-3 protocol): sort the comps by listed_at (unlisted last, ties
+ *    by slug), fit on the oldest 70%, test on the newest 30%. The out-of-sample error is the
+ *    median absolute log10 error on the test set, predicted with the training fit and the
+ *    training set's own group adjustments — no look-ahead.
+ *  - stratified walk-forward: dated and undated comps are each split 70/30 (dated by listing
+ *    date, undated by slug), so the undated third of the set is scored too instead of landing
+ *    whole in the test set.
+ *  - 5-fold cross-validation: the comps are shuffled once with a fixed seed and dealt into
+ *    five folds; each fold is scored by a fit on the other four.
+ * A 200-refit bootstrap (fixed seed, resampling the comps with replacement) gives the
+ * 1-sigma band on a predicted log value: the median standard deviation of the predictions
+ * across the comps.
  */
 export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): FittedModel {
   const comps = liveComps(snapshot);
-  const beta = fitOls(comps, snapshot.as_of, model);
-  const adjustments = categoryAdjustments(comps, snapshot.as_of, beta, model);
-  const r2 = rSquared(comps, snapshot.as_of, beta, adjustments, model);
+  const asOf = snapshot.as_of;
+  const fitOne = (rows: SnapshotProtocol[]): { beta: number[]; adj: Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }>; chainAdj: Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }> } => {
+    const beta = fitHuber(rows, asOf, model);
+    const adj = groupAdjustments(rows, asOf, beta, (p) => p.category ?? 'Other', model);
+    const chainAdj = groupAdjustments(rows, asOf, beta, mainChain, model);
+    return { beta, adj, chainAdj };
+  };
+  const medianAbsErr = (
+    rows: SnapshotProtocol[],
+    beta: number[],
+    adj: Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }>,
+    chainAdj: Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }>,
+  ): number => {
+    const errs = rows
+      .map((p) => Math.abs(Math.log10(p.mcap_usd!) - predictLog(p, asOf, beta, adj, chainAdj, model)))
+      .sort((a, b) => a - b);
+    return median(errs) ?? 0;
+  };
+
+  const full = fitOne(comps);
+  const r2 = rSquared(comps, asOf, full.beta, full.adj, full.chainAdj, model);
 
   const ordered = [...comps].sort((a, b) => {
     const la = a.listed_at ?? '9999-99-99';
@@ -386,38 +512,77 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
   const nTrain = Math.floor(ordered.length * 0.7);
   const train = ordered.slice(0, nTrain);
   const test = ordered.slice(nTrain);
-  const trainBeta = fitOls(train, snapshot.as_of, model);
-  const trainAdj = categoryAdjustments(train, snapshot.as_of, trainBeta, model);
-  const errs = test
-    .map((p) => Math.abs(Math.log10(p.mcap_usd!) - predictLog(p, snapshot.as_of, trainBeta, trainAdj, model)))
-    .sort((a, b) => a - b);
-  const oos = median(errs) ?? 0;
+  const wf = fitOne(train);
+  const oos = medianAbsErr(test, wf.beta, wf.adj, wf.chainAdj);
 
-  const growths = comps.map((p) => features(p, snapshot.as_of, model)[2]!).sort((a, b) => a - b);
-  const logAges = comps.map((p) => features(p, snapshot.as_of, model)[3]!).sort((a, b) => a - b);
+  const dated = ordered.filter((p) => p.listed_at !== null);
+  const undated = [...comps].filter((p) => p.listed_at === null).sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+  const stratTrain = [...dated.slice(0, Math.floor(dated.length * 0.7)), ...undated.slice(0, Math.floor(undated.length * 0.7))];
+  const stratTest = [...dated.slice(Math.floor(dated.length * 0.7)), ...undated.slice(Math.floor(undated.length * 0.7))];
+  const strat = fitOne(stratTrain);
+  const oosStratified = medianAbsErr(stratTest, strat.beta, strat.adj, strat.chainAdj);
+
+  const shuffled = seededShuffle(comps, 20261118);
+  const folds: SnapshotProtocol[][] = [[], [], [], [], []];
+  shuffled.forEach((p, i) => folds[i % 5]!.push(p));
+  const cvErrs: number[] = [];
+  for (let f = 0; f < 5; f++) {
+    const testFold = folds[f]!;
+    const trainFolds = folds.flatMap((fold, i) => (i === f ? [] : fold));
+    const cvFit = fitOne(trainFolds);
+    for (const p of testFold) cvErrs.push(Math.abs(Math.log10(p.mcap_usd!) - predictLog(p, asOf, cvFit.beta, cvFit.adj, cvFit.chainAdj, model)));
+  }
+  cvErrs.sort((a, b) => a - b);
+  const cv = median(cvErrs) ?? 0;
+
+  const bootRand = mulberry32(20261119);
+  const bootPreds: number[][] = comps.map(() => []);
+  for (let b = 0; b < 200; b++) {
+    const resample: SnapshotProtocol[] = [];
+    for (let i = 0; i < comps.length; i++) resample.push(comps[Math.floor(bootRand() * comps.length)]!);
+    const bootFit = fitOne(resample);
+    comps.forEach((p, i) => bootPreds[i]!.push(predictLog(p, asOf, bootFit.beta, bootFit.adj, bootFit.chainAdj, model)));
+  }
+  const sds = bootPreds
+    .map((preds) => {
+      const mean = preds.reduce((a, v) => a + v, 0) / preds.length;
+      return Math.sqrt(preds.reduce((a, v) => a + (v - mean) ** 2, 0) / preds.length);
+    })
+    .sort((a, b) => a - b);
+  const bootstrapSd = median(sds) ?? 0;
+
+  const growths = comps.map((p) => features(p, asOf, model)[2]!).sort((a, b) => a - b);
+  const logAges = comps.map((p) => features(p, asOf, model)[3]!).sort((a, b) => a - b);
   const fit: Fit = {
-    intercept: round4(beta[0]!),
-    coef_log_tvl: round4(beta[1]!),
-    coef_growth: round4(beta[2]!),
-    coef_log_age: round4(beta[3]!),
+    intercept: round4(full.beta[0]!),
+    coef_log_tvl: round4(full.beta[1]!),
+    coef_growth: round4(full.beta[2]!),
+    coef_log_age: round4(full.beta[3]!),
     n_comps: comps.length,
+    size_floor_usd: model.size_floor_usd,
     median_growth: round4(median(growths) ?? 0),
     median_log_age: round4(median(logAges) ?? 0),
   };
   const validation: Validation = {
     r2: round4(r2),
     oos_median_abs_log_err: round4(oos),
+    oos_stratified: round4(oosStratified),
+    cv_median_abs_log_err: round4(cv),
+    bootstrap_sd: round4(bootstrapSd),
     n_train: train.length,
     n_test: test.length,
   };
-  const comparables: Comparable[] = [...adjustments.entries()]
-    .map(([category, v]) => ({ category, count: v.count, adjustment: v.adjustment, basis: v.basis }))
-    .sort((a, b) => b.count - a.count || (a.category < b.category ? -1 : a.category > b.category ? 1 : 0));
+  const toComparable = (m: Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }>): Comparable[] =>
+    [...m.entries()]
+      .map(([category, v]) => ({ category, count: v.count, adjustment: v.adjustment, basis: v.basis }))
+      .sort((a, b) => b.count - a.count || (a.category < b.category ? -1 : a.category > b.category ? 1 : 0));
+  const comparables = toComparable(full.adj);
+  const chainComparables = toComparable(full.chainAdj);
   const scatter: ScatterPoint[] = comps.map((p) => ({
     x: round3(Math.log10(p.tvl_usd)),
     y: round3(Math.log10(p.mcap_usd!)),
   }));
-  return { beta, adjustments, fit, validation, comparables, scatter };
+  return { beta: full.beta, adjustments: full.adj, chainAdjustments: full.chainAdj, fit, validation, comparables, chainComparables, scatter };
 }
 
 /** The fitted implied value of one protocol, with its predicted log value and growth. */
@@ -426,12 +591,13 @@ export function impliedValue(
   asOf: string,
   fitted: FittedModel,
   model: ModelConstants = MODEL,
-): { implied: number; predictedLog: number; growthPct: number; age: number | null; adjustment: number; count: number; basis: 'category' | 'global' } {
+): { implied: number; predictedLog: number; growthPct: number; age: number | null; adjustment: number; chainAdjustment: number; count: number; basis: 'category' | 'global' } {
   const age = ageDays(asOf, protocol.listed_at);
-  const predictedLog = predictLog(protocol, asOf, fitted.beta, fitted.adjustments, model);
+  const predictedLog = predictLog(protocol, asOf, fitted.beta, fitted.adjustments, fitted.chainAdjustments, model);
   const raw = Math.round(10 ** predictedLog);
   const implied = Math.min(model.value_max, Math.max(model.value_min, raw));
   const adj = fitted.adjustments.get(protocol.category ?? 'Other');
+  const chainAdj = fitted.chainAdjustments.get(mainChain(protocol));
   const growthPct = features(protocol, asOf, model)[2]!;
   return {
     implied,
@@ -439,6 +605,7 @@ export function impliedValue(
     growthPct,
     age,
     adjustment: adj?.adjustment ?? 0,
+    chainAdjustment: chainAdj?.adjustment ?? 0,
     count: adj?.count ?? 0,
     basis: adj?.basis ?? 'global',
   };
@@ -717,6 +884,7 @@ export function buildBoard(snapshot: Snapshot, fitted: FittedModel, model: Model
       category_multiple: round4(s.v.implied / Math.max(1, s.p.tvl_usd)),
       predicted_log_value: s.v.predictedLog,
       category_adjustment: s.v.adjustment,
+      chain_adjustment: s.v.chainAdjustment,
       comparable_count: s.v.count,
       comparable_basis: s.v.basis,
       growth_pct: s.v.growthPct,
@@ -765,6 +933,7 @@ export function radarRow(row: BoardRow, onWatchlist: boolean): RadarRow {
     category_multiple: row.model.category_multiple,
     predicted_log_value: row.model.predicted_log_value,
     category_adjustment: row.model.category_adjustment,
+    chain_adjustment: row.model.chain_adjustment,
   };
 }
 
@@ -787,6 +956,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     fit: fitted.fit,
     validation: fitted.validation,
     comparables: fitted.comparables,
+    chain_adjustments: fitted.chainComparables,
     scatter: fitted.scatter,
     rows: board.map((r) => radarRow(r, snapshot.watchlist.includes(r.slug))),
     live,

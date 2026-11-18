@@ -4,7 +4,7 @@
 [![rank](https://make.fun/badge/token-radar-01/faaz12/token-radar/rank.svg)](https://make.fun/bounty/token-radar-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
 [![reward](https://make.fun/badge/token-radar-01/faaz12/token-radar/reward.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
 
-A make.fun `token-radar-01` entry (radar-3 model). It reads a sealed DefiLlama
+A make.fun `token-radar-01` entry (radar-4 model). It reads a sealed DefiLlama
 snapshot of 758 protocols, finds the ones that record no token, and ranks them
 by what their launch would be worth — then hands in a dashboard a reader can
 use: the board, a detail view for every protocol, and a farm plan for each one,
@@ -12,23 +12,34 @@ every plan costed with a verdict (farm / marginal / skip).
 
 ## The model
 
-Implied value is fitted, not hand-set. An OLS log-log regression is fitted at
-run time on the snapshot's own live-token comparables (119 protocols with a
-token trading, TVL and market cap positive, CEX excluded):
+Implied value is fitted, not hand-set. A Huber-fitted log-log regression is
+fitted at run time on the snapshot's own live-token comparables (119 protocols
+with a token trading, TVL and market cap positive, CEX excluded):
 
 ```
-log10(mcap) = b0 + b1*log10(tvl_usd) + b2*clamp(change_7d, -60, 120)
-              + b3*log10(age_days + 1) + category adjustment
+log10(mcap) = b0 + b1*log10(tvl_usd + $100M) + b2*clamp(change_7d, -60, 120)
+              + b3*log10(age_days + 1) + category adjustment + main-chain adjustment
 implied = round(10^predicted), clamped to [1, $100B]
 ```
 
-The **category adjustment** is the median residual of the category's live
-comparables; a category with fewer than 3 comps gets 0 (the global fit).
-The fit is validated **walk-forward** at run time: the comps are sorted by
-`listed_at`, the oldest 70% fit the model and the newest 30% test it. The
-dashboard shows the fitted coefficients, the in-sample R² and the
-out-of-sample median absolute log10 error, plus a scatter of the live comps
-against the fitted line. No protocol name is ever special-cased.
+The **size floor** ($100M) keeps the curve from pricing a small protocol at
+zero for being small: TVL below $100M is noisy in the snapshot. **Huber**
+(IRLS, delta 1.345, MAD scale) down-weights the snapshot's own attribution
+quirks — a chain token counted on its bridge, one token counted on two
+versions of a protocol — instead of letting them drag the curve. The **group
+adjustments** are the median residual of the category and of the main chain,
+each shrunk toward zero by n/(n+3): a group with one or two comps moves a
+price a little, a group with fifteen moves it a lot. Full-size adjustments
+failed the walk-forward test; shrunk ones did not.
+
+The fit is validated **three ways** at run time, and the dashboard shows all
+three: walk-forward (oldest 70% fit, newest 30% tested), stratified
+walk-forward (dated and undated comps each split 70/30), and 5-fold
+cross-validation (fixed-seed shuffle). A 200-refit bootstrap (fixed seed)
+gives the 1-sigma band on a predicted log value. On this snapshot:
+R² 0.4108, walk-forward median error 0.6648 dex, stratified 0.6320 dex,
+5-fold CV 0.5307 dex, bootstrap ±0.3207 dex — against radar-3's R² 0.2079
+and walk-forward error 0.8136 dex. No protocol name is ever special-cased.
 
 Every farm plan carries a **verdict** from the fitted value against the plan's
 own cost (capital deployed plus seven transactions of gas): farm when the value
