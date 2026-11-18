@@ -1,7 +1,7 @@
-// Token Radar's entrypoint (radar-10, Node 22, standard library only).
+// Token Radar's entrypoint (radar-12, Node 24, standard library only).
 //
 // Reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), scores every
-// pre-token protocol with the Huber-fitted log-log regression in lib/model.ts, writes the ranked
+// pre-token protocol with the charter-selected log-log regression in lib/model.ts, writes the ranked
 // board to /output/board.json, writes the dashboard's data to /output/data.js, copies this
 // repository's dashboard/ and screenshots/ to /output, and writes /output/dossier.json with
 // the vendored make.fun library. Runs twice and must write the same bytes both times: the
@@ -15,6 +15,7 @@
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input ../input/snapshot.json
 
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { boardIssue, buildRadar, dataScript, parseSnapshot, validateSnapshot } from './lib/model.ts';
@@ -43,7 +44,11 @@ if (!existsSync(inputFile)) {
 }
 const out = arg('output', process.env.MAKEFUN_OUTPUT_DIR ?? '/output');
 
-const snapshot = parseSnapshot(readFileSync(inputFile, 'utf8'));
+const snapshotText = readFileSync(inputFile, 'utf8');
+const snapshot = parseSnapshot(snapshotText);
+// The snapshot hash for the reproducibility package (charter v1.5): computed
+// from the input file at build time, never typed by hand.
+const snapshotSha256 = createHash('sha256').update(snapshotText).digest('hex');
 // Statistical checks on the sealed snapshot, before any fitting: errors abort the build.
 const snapshotCheck = validateSnapshot(snapshot);
 for (const w of snapshotCheck.warnings) process.stderr.write(`token radar: snapshot warning: ${w}\n`);
@@ -51,7 +56,7 @@ if (snapshotCheck.errors.length > 0) {
   for (const e of snapshotCheck.errors) process.stderr.write(`token radar: snapshot error: ${e}\n`);
   process.exit(1);
 }
-const { board, radar, evSimulationExport } = buildRadar(snapshot);
+const { board, radar, evSimulationExport } = buildRadar(snapshot, undefined, snapshotSha256);
 const issue = boardIssue(board, snapshot);
 if (issue !== null) {
   process.stderr.write(`token radar: the model wrote a board the gate refuses: ${issue}\n`);

@@ -1,4 +1,4 @@
-// Token Radar's dashboard (radar-11, charter v1.4). It reads window.RADAR (written beside dashboard/ by
+// Token Radar's dashboard (radar-12, charter v1.5). It reads window.RADAR (written beside dashboard/ by
 // main.ts) and renders the ranked board, a filterable table, a per-protocol detail drawer with
 // the fitted model's own inputs and the protocol's farm plan with its verdict, and a model
 // sandbox that re-ranks the board live. No network: every byte it shows is in data.js.
@@ -124,17 +124,24 @@
     }
     return { mean: mean, conditionalMeanEv: conditionalMeanEv, p10: q(0.1), p25: q(0.25), p50: q(0.5), p75: q(0.75), p90: q(0.9), probNegative: probNegative };
   }
-  // The five prespecified gate policies (charter v1.4): (a) the strict rule —
+  // The six prespecified gate policies (charter v1.5): (a) the strict rule —
   // mean EV > 0 AND P25 of the net return > 0; (b) the Gemini proposal — conditional
   // mean EV > 3x plan cost AND unconditional mean EV > 0; (c) the P(loss) ceiling —
   // mean EV > 0 AND P(negative return) <= 0.90; (d) conditional mean EV > 3x plan
   // cost AND P(negative return) <= 0.85 — launch probability as a risk weighting;
-  // (e) conditional mean EV > 5x plan cost AND mean EV > 0 AND P(negative return) <= 0.90.
-  function gatePassesAnalytic(variant, s, cost) {
+  // (e) conditional mean EV > 5x plan cost AND mean EV > 0 AND P(negative return) <= 0.90;
+  // (f) the odds-consistent correction of (d) — conditional mean EV > 3x plan cost
+  // AND P(negative return) <= 1 - 0.75 x p_L, where p_L is the launch odds of the
+  // layer the statistics come from.
+  function gatePassesAnalytic(variant, s, cost, pL) {
     if (variant === 'b') return s.conditionalMeanEv > 3 * cost && s.mean > 0;
     if (variant === 'c') return s.mean > 0 && s.probNegative <= 0.9;
     if (variant === 'd') return s.conditionalMeanEv > 3 * cost && s.probNegative <= 0.85;
     if (variant === 'e') return s.conditionalMeanEv > 5 * cost && s.mean > 0 && s.probNegative <= 0.9;
+    if (variant === 'f') {
+      if (pL === undefined || !isFinite(pL)) return false;
+      return s.conditionalMeanEv > 3 * cost && s.probNegative <= 1 - 0.75 * pL;
+    }
     return s.mean > 0 && s.p25 > 0;
   }
   function effectiveRows() {
@@ -165,7 +172,7 @@
     var cons = DATA.validation.launch_odds_decision.conservative_lower_bound;
     var statsAdopted = analyticEvStats(row, pred, cost, row.launch_odds);
     var statsCons = analyticEvStats(row, pred, cost, cons);
-    if (gatePassesAnalytic(adopted, statsCons, cost)) return 'farm';
+    if (gatePassesAnalytic(adopted, statsCons, cost, cons)) return 'farm';
     if (statsAdopted.mean > 0) return 'marginal';
     if (breakEvenOdds(Math.pow(10, pred), cost) <= MODEL.marginal_break_even) return 'marginal';
     return 'skip';
@@ -379,7 +386,7 @@
           'The watchlist is the floor: every protocol with at least ', el('b', { text: '$' + Math.round(DATA.floor_usd / 1e6) + 'M' }),
           ' of TVL and no token on record. The early radar adds ', el('b', { text: String(DATA.early_size) }),
           ' pre-token protocols below that floor, so the board is the whole pre-token universe the snapshot holds: ',
-          el('b', { text: String(DATA.board_size) }), ' rows. Each row is priced by a regression fitted on the live-token comparables: the fitted value if it launches, multiplied by the launch odds, gives the implied value. The launch odds are the base rate of ', el('b', { text: Math.round(DATA.seasoning.base_rate * 1000) / 10 + '%' }), ' for every row under charter v1.4 — the seasoning curve does not beat the base rate out of sample, so the board does not use it. Each farm plan carries a verdict — farm, marginal or skip — from one seeded simulation of the net return (launch Bernoulli x lognormal value): the mean is the expected net return of farming it with a standard $10,000 deposit; farm only when the adopted gate (variant ', el('b', { text: DATA.validation.gate_test.adopted }), ') passes even under the conservative launch odds of ', el('b', { text: (DATA.validation.launch_odds_decision.conservative_lower_bound * 100).toFixed(1) + '%' }), '. On this board it passes for ', el('b', { text: vc.farm + ' row' + (vc.farm === 1 ? '' : 's') }), ' — the gate test below shows why: the strict rule farms nothing under any of seven value distributions; the conditional-on-launch gate (d) fires — 4 rows under the adopted odds — but every one of them fails the conservative-odds stress test, so the board still farms 0. The page serves two functions, kept separate: the valuation radar (the conditional value and its uncertainty, useful even with 0 farms) and the farming decision engine (which never lowers a threshold to look active). Implied value is a model, not a promise.')
+          el('b', { text: String(DATA.board_size) }), ' rows. Each row is priced by a regression fitted on the live-token comparables: the fitted value if it launches, multiplied by the launch odds, gives the implied value. The launch odds are the base rate of ', el('b', { text: Math.round(DATA.seasoning.base_rate * 1000) / 10 + '%' }), ' for every row under charter v1.5 — the seasoning curve does not beat the base rate out of sample, so the board does not use it. Each farm plan carries a verdict — farm, marginal or skip — from one seeded simulation of the net return (launch Bernoulli x lognormal value): the mean is the expected net return of farming it with a standard $10,000 deposit; farm only when the adopted gate (variant ', el('b', { text: DATA.validation.gate_test.adopted }), ') passes even under the conservative launch odds of ', el('b', { text: (DATA.validation.launch_odds_decision.conservative_lower_bound * 100).toFixed(1) + '%' }), '. On this board it passes for ', el('b', { text: vc.farm + ' row' + (vc.farm === 1 ? '' : 's') }), ' — the gate test below shows why: the strict rule farms nothing under any of seven value distributions; the conditional-on-launch gate (d) fires — ' + DATA.validation.gate_test.variant_d.farm_count + ' rows under the adopted odds — but none of them survives the conservative-odds stress test, because its fixed 0.85 ceiling is structurally impossible under the conservative odds; the adopted gate (f) corrects the ceiling to an odds-consistent form and farms ' + DATA.validation.gate_test.variant_f.farm_count + ' rows under both odds layers. The page serves two functions, kept separate: the valuation radar (the conditional value and its uncertainty) and the farming decision engine (which never lowers a threshold to look active). Implied value is a model, not a promise.')
       ),
       el('div', { class: 'facts' },
         el('div', { class: 'fact' }, el('span', { text: 'Watchlist covered' }), el('b', { text: DATA.watchlist_size + ' / ' + DATA.watchlist_size })),
@@ -387,7 +394,7 @@
         el('div', { class: 'fact' }, el('span', { text: 'Total implied value' }), el('b', { text: fmtUsd(total) })),
         el('div', { class: 'fact' }, el('span', { text: 'Launch odds (base rate, all rows)' }), el('b', { text: (DATA.seasoning.base_rate * 100).toFixed(1) + '%' })),
         el('div', { class: 'fact' }, el('span', { text: 'Farm verdicts' }), el('b', { text: vc.farm + ' farm / ' + vc.marginal + ' marginal / ' + vc.skip + ' skip' })),
-        el('div', { class: 'fact' }, el('span', { text: 'Gate test (adopted variant ' + DATA.validation.gate_test.adopted + ')' }), el('b', { text: 'variant (a) ' + DATA.validation.gate_test.variant_a.farm_count + ' farms, variant (b) ' + DATA.validation.gate_test.variant_b.farm_count + ' farms, variant (c) ' + DATA.validation.gate_test.variant_c.farm_count + ' farms, variant (d) ' + DATA.validation.gate_test.variant_d.farm_count + ' farms, variant (e) ' + DATA.validation.gate_test.variant_e.farm_count + ' farms' })),
+        el('div', { class: 'fact' }, el('span', { text: 'Gate test (adopted variant ' + DATA.validation.gate_test.adopted + ')' }), el('b', { text: 'variant (a) ' + DATA.validation.gate_test.variant_a.farm_count + ' farms, variant (b) ' + DATA.validation.gate_test.variant_b.farm_count + ' farms, variant (c) ' + DATA.validation.gate_test.variant_c.farm_count + ' farms, variant (d) ' + DATA.validation.gate_test.variant_d.farm_count + ' farms, variant (e) ' + DATA.validation.gate_test.variant_e.farm_count + ' farms, variant (f) ' + DATA.validation.gate_test.variant_f.farm_count + ' farms (' + DATA.validation.gate_test.variant_f.farm_count_conservative + ' under conservative odds)' })),
         el('div', { class: 'fact' }, el('span', { text: 'Nested walk-forward error (pooled)' }), el('b', { text: DATA.validation.nested_wf_pooled + ' dex (about ' + (Math.pow(10, DATA.validation.nested_wf_pooled)).toFixed(2) + 'x)' })),
         el('div', { class: 'fact' }, el('span', { text: 'Live-token protocols set aside' }), el('b', { text: String(DATA.live_size) }))
       )
@@ -476,13 +483,15 @@
       var growth = r.change_7d === null ? 'n/a' : fmtPct(r.change_7d);
       var growthClass = r.change_7d === null ? '' : r.change_7d >= 0 ? 'pos' : 'neg';
       var rankShown = state.sandbox && r.sandboxRank ? r.sandboxRank : r.rank;
+      var rankRange = r.rank_range ? r.rank_range : [r.rank, r.rank, r.rank];
+      var rankText = state.sandbox ? String(rankShown) : (rankRange[0] === rankRange[2] ? String(rankShown) : String(rankShown) + ' (' + rankRange[0] + '–' + rankRange[2] + ')');
       var tr = el('tr', {
         'data-selected': state.selected === r.slug ? 'true' : 'false',
         tabindex: '0',
         onclick: function () { openDetail(r.slug); },
         onkeydown: function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDetail(r.slug); } }
       },
-        el('td', { class: 'num', text: String(rankShown) }),
+        el('td', { class: 'num', text: rankText }),
         el('td', null, el('div', { class: 'name' },
           el('b', { text: r.name }),
           el('span', { class: 'sub', text: (r.category || 'Other') + ' on ' + (r.chains && r.chains.length ? r.chains.slice(0, 2).join(', ') : 'an unnamed chain') + (r.on_watchlist ? ' - watchlist' : '') })
@@ -503,7 +512,7 @@
     return el('div', { class: 'panel' },
       el('div', { class: 'table-wrap' },
         el('table', null,
-          el('caption', { class: 'sub', text: (state.sandbox ? 'Sandbox ranking: the model re-run with your sliders. board.json keeps the canonical ranks. ' : 'Pre-token protocols, strongest implied value first. ') + 'Select a row for its model and farm plan.' }),
+          el('caption', { class: 'sub', text: (state.sandbox ? 'Sandbox ranking: the model re-run with your sliders. board.json keeps the canonical ranks. ' : 'Pre-token protocols, strongest implied value first. Ranks show their LOPO range (min–max across the 70 refits) where the data does not support one precise rank. ') + 'Select a row for its model and farm plan.' }),
           el('thead', null, el('tr', null,
             sortHeader('implied', 'Rank'),
             sortHeader('name', 'Protocol'),
@@ -606,7 +615,7 @@
     scatter.innerHTML = scatterSvg();
     return el('section', { class: 'panel model' },
       el('h2', { text: 'How value is fitted' }),
-      el('p', { class: 'sub', text: 'A ' + v.model_selection.selected.toUpperCase() + '-fitted log-log regression, fitted at run time on the snapshot\'s own live-token comparables — ' + FIT.n_comps + ' DATED protocols with a token trading, TVL and market cap positive, CEX excluded, and only protocols the board could rank: the board\'s own wrapped / staked / bridged / versioned / exchange-product exclusions are applied to the training set too, so the curve is fitted on the population it prices. The 22 undated comparables are hard-gated out of every fit and calibration (charter v1.4) and appear only as a reference table below. Huber, OLS and a mild ridge were co-equal candidates; the prespecified selection rule picked ' + v.model_selection.selected.toUpperCase() + ' — ' + v.model_selection.reason + ' Every group adjustment below is a median residual shrunk toward zero, so a group with one or two comps moves a price a little and a group with fifteen moves it a lot. Growth is not a production feature: the growth coefficient is unstable across folds and no growth variant improves held-out error, so the 7-day change is shown for display only and never enters the fit. Age is not a regression term: the seasoning curve below is diagnostic only — under charter v1.4 every row is priced with the base-rate launch odds, because the curve does not beat the base rate out of sample. No protocol name is special-cased, and no row is hand-picked.' }),
+      el('p', { class: 'sub', text: 'A ' + v.model_selection.selected.toUpperCase() + '-fitted log-log regression, fitted at run time on the snapshot\'s own live-token comparables — ' + FIT.n_comps + ' DATED protocols with a token trading, TVL and market cap positive, CEX excluded, and only protocols the board could rank: the board\'s own wrapped / staked / bridged / versioned / exchange-product exclusions are applied to the training set too, so the curve is fitted on the population it prices. The 22 undated comparables are hard-gated out of every fit and calibration (charter v1.4) and appear only as a reference table below. Huber, OLS and a mild ridge were co-equal candidates; the prespecified selection rule picked ' + v.model_selection.selected.toUpperCase() + ' — ' + v.model_selection.reason + ' Every group adjustment below is a median residual shrunk toward zero, so a group with one or two comps moves a price a little and a group with fifteen moves it a lot. Growth is not a production feature: the growth coefficient is unstable across folds and no growth variant improves held-out error, so the 7-day change is shown for display only and never enters the fit. Age is not a regression term: the seasoning curve below is diagnostic only — under charter v1.5 every row is priced with the base-rate launch odds, because the curve does not beat the base rate out of sample. No protocol name is special-cased, and no row is hand-picked.' }),
       el('div', { class: 'formula' },
         el('b', { text: 'log10(value if it launches)' }), ' = ', el('b', { text: String(FIT.intercept) }),
         ' + ', el('b', { text: String(FIT.coef_log_tvl) }), ' x log10(TVL + $25M)',
@@ -871,34 +880,35 @@
           }))
         )
       ),
-      el('h3', { text: 'Gate test: five prespecified policies, tested honestly (charter v1.4)' }),
-      el('p', { class: 'sub', text: 'Five prespecified gate policies were tested on the corrected simulation statistics with a rule fixed BEFORE the results were seen — a policy is eligible only if it fires (farms at least one row), filters (rejects at least one positive-mean-EV row through its additional condition), and keeps its worst farm\'s P(negative return) at or below 0.90; among the eligible policies, adopt the one with the lowest maximum P(negative return), ties broken (a), then (b), then (c), then (d), then (e); if none is eligible, keep the pre-existing rule (a) and report the resulting farm count as-is. The farm count is never a target. The P25 rule\'s math, corrected in v1.3: P25 > 0 needs P(net return > 0) ≥ 75%, and with launch odds at the 16.4% base rate that is impossible for any row — a positive P25 needs launch odds above 50%, nearly unreachable for a call option on a 16% base rate. ' + v.gate_test.reason }),
+      el('h3', { text: 'Gate test: six prespecified policies, tested honestly under both odds layers (charter v1.5)' }),
+      el('p', { class: 'sub', text: 'Six prespecified gate policies were tested on the corrected simulation statistics under BOTH odds layers — the adopted (base-rate) odds and the conservative (2.5th-percentile) odds — with a rule fixed BEFORE the results were seen. A policy is eligible only if it fires (farms at least one row), filters (rejects at least one positive-mean-EV row through its additional condition), and keeps its worst farm\'s P(negative return) at or below 0.90, under BOTH layers; among the eligible policies, adopt the one with the lowest worst-farm P(negative return) under the conservative odds, ties broken (a), then (b), then (c), then (d), then (e), then (f); if none is eligible, keep the pre-existing rule (a) and report the resulting farm count as-is. The farm count is never a target. The P25 rule\'s math, corrected in v1.3: P25 > 0 needs P(net return > 0) ≥ 75%, and with launch odds at the 16.4% base rate that is impossible for any row — a positive P25 needs launch odds above 50%, nearly unreachable for a call option on a 16% base rate. Policy (d)\'s fixed 0.85 ceiling is the same kind of structural impossibility under the conservative odds: the floor on P(negative) there is 1 − 0.1364 = 0.8636 > 0.85, so (d) can never fire under the conservative layer — the v1.4 board\'s 0 farms was a design outcome, not a data outcome. Policy (f) corrects the ceiling to 1 − 0.75 × p_L (at least 75% of launches must clear breakeven), which scales with the odds layer. ' + v.gate_test.reason }),
       el('div', { class: 'table-wrap' },
         el('table', { class: 'comps' },
-          el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Variant' }), el('th', { scope: 'col', text: 'Rule' }), el('th', { scope: 'col', text: 'Farms' }), el('th', { scope: 'col', text: 'Positive-EV rows' }), el('th', { scope: 'col', text: 'Rejected positive-EV rows' }), el('th', { scope: 'col', text: 'Max P(negative) among farms' }), el('th', { scope: 'col', text: 'Fires / filters / within ceiling' }), el('th', { scope: 'col', text: 'Eligible?' }), el('th', { scope: 'col', text: 'Adopted?' }))),
-          el('tbody', null, [v.gate_test.variant_a, v.gate_test.variant_b, v.gate_test.variant_c, v.gate_test.variant_d, v.gate_test.variant_e].map(function (g) {
+          el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Variant' }), el('th', { scope: 'col', text: 'Rule' }), el('th', { scope: 'col', text: 'Farms (adopted odds)' }), el('th', { scope: 'col', text: 'Farms (conservative odds)' }), el('th', { scope: 'col', text: 'Positive-EV rows' }), el('th', { scope: 'col', text: 'Rejected positive-EV rows' }), el('th', { scope: 'col', text: 'Max P(negative) among farms (adopted / conservative)' }), el('th', { scope: 'col', text: 'Fires / filters / within ceiling (both layers)' }), el('th', { scope: 'col', text: 'Eligible?' }), el('th', { scope: 'col', text: 'Adopted?' }))),
+          el('tbody', null, [v.gate_test.variant_a, v.gate_test.variant_b, v.gate_test.variant_c, v.gate_test.variant_d, v.gate_test.variant_e, v.gate_test.variant_f].map(function (g) {
             return el('tr', null,
               el('td', { text: '(' + g.variant + ')' }),
               el('td', { text: g.rule }),
               el('td', { class: 'num', text: String(g.farm_count) }),
+              el('td', { class: 'num', text: String(g.farm_count_conservative) }),
               el('td', { class: 'num', text: String(g.positive_ev_count) }),
               el('td', { class: 'num', text: String(g.rejected_positive_count) }),
-              el('td', { class: 'num', text: g.max_prob_negative === null ? '—' : Math.round(g.max_prob_negative * 100) + '%' }),
-              el('td', { text: (g.fires ? 'fires' : 'does not fire') + ' / ' + (g.filters ? 'filters' : 'does not filter') + ' / ' + (g.within_risk_ceiling ? 'within ceiling' : 'over ceiling') }),
+              el('td', { class: 'num', text: (g.max_prob_negative === null ? '—' : Math.round(g.max_prob_negative * 100) + '%') + ' / ' + (g.max_prob_negative_conservative === null ? '—' : Math.round(g.max_prob_negative_conservative * 100) + '%') }),
+              el('td', { text: (g.fires ? 'fires' : 'does not fire') + ' / ' + (g.filters ? 'filters' : 'does not filter') + ' / ' + (g.within_risk_ceiling ? 'within ceiling' : 'over ceiling') + ' — conservative: ' + (g.fires_conservative ? 'fires' : 'does not fire') + ' / ' + (g.filters_conservative ? 'filters' : 'does not filter') + ' / ' + (g.within_risk_ceiling_conservative ? 'within ceiling' : 'over ceiling') }),
               el('td', { text: g.eligible ? 'yes' : 'no' }),
               el('td', { text: v.gate_test.adopted === g.variant ? 'YES' : 'no' })
             );
           }))
         )
       ),
-      el('p', { class: 'sub', text: 'What the test found: variant (a) — mean EV > 0 AND the P25 of the net return > 0 — farms ' + v.gate_test.variant_a.farm_count + ' rows under every one of the seven value distributions in the tournament below, because with launch odds at the base rate (16.4%) the 25th percentile of every row’s net return is −cost: 83.6% of the distribution is the non-launch point mass, so P25 > 0 needs launch odds above 50%. Variant (b) — conditional mean EV > 3x plan cost AND unconditional mean EV > 0 — farms ' + v.gate_test.variant_b.farm_count + ' of the ' + v.gate_test.variant_b.positive_ev_count + ' positive-EV rows and filters nothing: it fires on every row whose conditional value is large, including rows with up to an ' + (v.gate_test.variant_b.max_prob_negative === null ? '—' : Math.round(v.gate_test.variant_b.max_prob_negative * 100) + '%') + ' chance of loss. Variant (c) — mean EV > 0 AND P(negative) ≤ 0.90 — farms ' + v.gate_test.variant_c.farm_count + ' rows and also filters nothing. Variant (d) — the Gemini candidate, conditional mean EV > 3x plan cost AND P(negative) ≤ 0.85, launch probability as a risk weighting — farms ' + v.gate_test.variant_d.farm_count + ' rows and filters ' + v.gate_test.variant_d.rejected_positive_count + ' of the ' + v.gate_test.variant_d.positive_ev_count + ' positive-EV rows, with a worst farm P(negative) of ' + (v.gate_test.variant_d.max_prob_negative === null ? '—' : Math.round(v.gate_test.variant_d.max_prob_negative * 100) + '%') + ': it is eligible, and it is adopted. Variant (e) — conditional mean EV > 5x plan cost AND mean EV > 0 AND P(negative) ≤ 0.90 — farms ' + v.gate_test.variant_e.farm_count + ' rows, filters only ' + v.gate_test.variant_e.rejected_positive_count + ', and its worst farm carries a higher P(negative) than (d)’s, so it loses. The adopted gate is (d). But the board still has 0 farm verdicts: a farm verdict requires the adopted gate to pass under the CONSERVATIVE launch odds (13.64%), and all 4 of (d)’s farms fail that stress test — Polymarket’s P(negative) rises from 83.8% to 86.6% under conservative odds, above the 0.85 ceiling. The gate can now fire and filter; the stress test is what keeps the board at 0.' }),
-      el('h3', { text: 'Two functions: valuation radar and farming decision engine (charter v1.4)' }),
-      el('p', { class: 'sub', text: 'The page serves two functions, and they are judged separately. (1) The valuation radar — the conditional value if a protocol launches, with its uncertainty band — is useful even with 0 farm verdicts: it ranks 198 pre-token protocols by fitted value, and the ranking is the same under every value distribution in the tournament below. (2) The farming decision engine — the gate that turns a valuation into a FARM verdict — is judged on whether it can fire AND filter: it must pick farms without farming everything with a positive mean. In radar-11 the engine CAN do that under the new conditional-on-launch gate (d): it fires on 4 rows and rejects 92. But the board still reports 0 farms, because the conservative-odds stress test demotes all 4. The engine is never fixed by lowering a threshold to make it look active: a gate that farms all 96 positive-EV rows, some with an 89% chance of loss, is not a working gate. When the launch odds or the value model earn a gate that survives the stress test, the engine will farm; until then the radar still ranks.' }),
+      el('p', { class: 'sub', text: 'What the test found: variant (a) — mean EV > 0 AND the P25 of the net return > 0 — farms ' + v.gate_test.variant_a.farm_count + ' rows under every one of the seven value distributions in the tournament below, because with launch odds at the base rate (16.4%) the 25th percentile of every row’s net return is −cost: 83.6% of the distribution is the non-launch point mass, so P25 > 0 needs launch odds above 50%. Variant (b) — conditional mean EV > 3x plan cost AND unconditional mean EV > 0 — farms ' + v.gate_test.variant_b.farm_count + ' of the ' + v.gate_test.variant_b.positive_ev_count + ' positive-EV rows under the adopted odds (' + v.gate_test.variant_b.farm_count_conservative + ' under the conservative odds) and filters nothing under the adopted odds: it fires on every row whose conditional value is large, including rows with up to an ' + (v.gate_test.variant_b.max_prob_negative === null ? '—' : Math.round(v.gate_test.variant_b.max_prob_negative * 100) + '%') + ' chance of loss — so it is not eligible under the two-layer rule. Variant (c) — mean EV > 0 AND P(negative) ≤ 0.90 — farms ' + v.gate_test.variant_c.farm_count + ' rows and also filters nothing under the adopted odds. Variant (d) — the Gemini candidate, conditional mean EV > 3x plan cost AND P(negative) ≤ 0.85, launch probability as a risk weighting — farms ' + v.gate_test.variant_d.farm_count + ' rows and filters ' + v.gate_test.variant_d.rejected_positive_count + ' of the ' + v.gate_test.variant_d.positive_ev_count + ' positive-EV rows, with a worst farm P(negative) of ' + (v.gate_test.variant_d.max_prob_negative === null ? '—' : Math.round(v.gate_test.variant_d.max_prob_negative * 100) + '%') + ' — but it farms ' + v.gate_test.variant_d.farm_count_conservative + ' rows under the conservative odds, so it does not fire there and is not eligible. Variant (e) — conditional mean EV > 5x plan cost AND mean EV > 0 AND P(negative) ≤ 0.90 — farms ' + v.gate_test.variant_e.farm_count + ' rows under the adopted odds and ' + v.gate_test.variant_e.farm_count_conservative + ' under the conservative odds, and IS eligible — but its worst farm under the conservative odds carries P(negative) ' + (v.gate_test.variant_e.max_prob_negative_conservative === null ? '—' : Math.round(v.gate_test.variant_e.max_prob_negative_conservative * 100) + '%') + ', higher than (f)’s. Variant (f) — the odds-consistent correction of (d) — farms ' + v.gate_test.variant_f.farm_count + ' rows under the adopted odds and ' + v.gate_test.variant_f.farm_count_conservative + ' under the conservative odds, filters ' + v.gate_test.variant_f.rejected_positive_count + ' of the ' + v.gate_test.variant_f.positive_ev_count + ' positive-EV rows, with a worst farm P(negative) of ' + (v.gate_test.variant_f.max_prob_negative_conservative === null ? '—' : Math.round(v.gate_test.variant_f.max_prob_negative_conservative * 100) + '%') + ' under the conservative odds — the lowest among the eligible policies, so it is adopted. The board farms ' + DATA.rows.filter(function (r) { return r.verdict === 'farm'; }).length + ' rows: the ' + v.gate_test.variant_f.farm_count_conservative + ' (f) farms under the conservative odds minus the rows blocked by major OOD. The (f) ceiling is a correction of an odds-inconsistent constant, not a loosening to hit a farm count — and the simulation-vs-analytic reconciliation in the gate grid below shows the board’s FARM count carries ±3 rows of Monte Carlo noise.' }),
+      el('h3', { text: 'Two functions: valuation radar and farming decision engine (charter v1.5)' }),
+      el('p', { class: 'sub', text: 'The page serves two functions, and they are judged separately. (1) The valuation radar — the conditional value if a protocol launches, with its uncertainty band — ranks 198 pre-token protocols by fitted value, and the ranking is the same under every value distribution in the tournament below. (2) The farming decision engine — the gate that turns a valuation into a FARM verdict — is judged on whether it can fire AND filter under BOTH odds layers: it must pick farms without farming everything with a positive mean. Under charter v1.5 the engine does that under the odds-consistent gate (f): it fires on ' + v.gate_test.variant_f.farm_count + ' rows and rejects ' + v.gate_test.variant_f.rejected_positive_count + ' of the ' + v.gate_test.variant_f.positive_ev_count + ' positive-EV rows under the adopted odds, and the same ' + v.gate_test.variant_f.farm_count_conservative + ' rows survive the conservative-odds stress test — so the board farms ' + DATA.rows.filter(function (r) { return r.verdict === 'farm'; }).length + ' rows after the OOD block. The engine is never fixed by lowering a threshold to make it look active: a gate that farms all 96 positive-EV rows, some with an 89% chance of loss, is not a working gate.' }),
       el('h3', { text: 'Distribution tournament: no decision rests on the uncapped lognormal mean (charter v1.4)' }),
       el('p', { class: 'sub', text: 'The same ' + v.distribution_tournament.results[0].n_rows + ' audit rows (every farm row plus every positive-EV row) re-priced under seven conditional-launch-value distributions, 5,000 draws each, paired where possible — the four lognormal variants share the same normal draws, and the launch uniforms are common to every distribution. The production distribution is the ' + v.distribution_tournament.production_distribution + '. The cap is the largest observed dated-comp market cap (' + fmtUsd(v.distribution_tournament.cap_usd) + '); the P90-cap row (' + fmtUsd(v.distribution_tournament.cap_p90_usd) + ') and the P95-cap row (' + fmtUsd(v.distribution_tournament.cap_p95_usd) + ') are sensitivity checks. Pooled CRPS on the nested selection folds: capped ' + v.distribution_tournament.crps.capped_dex + ' dex vs uncapped ' + v.distribution_tournament.crps.uncapped_dex + ' dex on ' + v.distribution_tournament.crps.n_test_rows + ' test rows — the cap is kept as a risk limit, not an accuracy claim: capped CRPS is slightly worse than uncapped, so the cap limits the downside of a fat right tail rather than improving the distribution. ' + v.distribution_tournament.note }),
       el('div', { class: 'table-wrap' },
         el('table', { class: 'comps' },
-          el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Distribution' }), el('th', { scope: 'col', text: 'Pooled conditional mean value' }), el('th', { scope: 'col', text: 'Pooled conditional median value' }), el('th', { scope: 'col', text: 'Pooled mean net EV' }), el('th', { scope: 'col', text: 'Pooled P(negative)' }), el('th', { scope: 'col', text: 'Farms (a) / (b) / (c) / (d) / (e)' }), el('th', { scope: 'col', text: 'Farm-set overlap vs production (b)' }))),
+          el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Distribution' }), el('th', { scope: 'col', text: 'Pooled conditional mean value' }), el('th', { scope: 'col', text: 'Pooled conditional median value' }), el('th', { scope: 'col', text: 'Pooled mean net EV' }), el('th', { scope: 'col', text: 'Pooled P(negative)' }), el('th', { scope: 'col', text: 'Farms (a) / (b) / (c) / (d) / (e) / (f)' }), el('th', { scope: 'col', text: 'Farm-set overlap vs production (b)' }))),
           el('tbody', null, v.distribution_tournament.results.map(function (r) {
             var ov = v.distribution_tournament.farm_set_overlap_b.filter(function (o) { return o.distribution === r.distribution; })[0];
             return el('tr', null,
@@ -907,7 +917,7 @@
               el('td', { class: 'num', text: fmtUsd(r.pooled_conditional_median_value_usd) }),
               el('td', { class: 'num', text: (r.pooled_mean_net_ev_usd >= 0 ? '+' : '−') + fmtUsd(Math.abs(r.pooled_mean_net_ev_usd)) }),
               el('td', { class: 'num', text: Math.round(r.pooled_prob_negative * 100) + '%' }),
-              el('td', { class: 'num', text: r.farm_count_a + ' / ' + r.farm_count_b + ' / ' + r.farm_count_c + ' / ' + r.farm_count_d + ' / ' + r.farm_count_e }),
+              el('td', { class: 'num', text: r.farm_count_a + ' / ' + r.farm_count_b + ' / ' + r.farm_count_c + ' / ' + r.farm_count_d + ' / ' + r.farm_count_e + ' / ' + r.farm_count_f }),
               el('td', { class: 'num', text: ov ? String(ov.jaccard_vs_production_b) : '—' })
             );
           }))
@@ -991,17 +1001,20 @@
           }))
         )
       ),
-      el('h3', { text: 'Ranking stability: does the order hold when the model is refit? (charter v1.4)' }),
-      el('p', { class: 'sub', text: 'Two questions, answered separately. (1) Do higher-valued protocols tend to be worth more out of sample? Nested walk-forward, predicted rank vs actual rank per fold: pooled Spearman ' + v.ranking_stability.nested_pooled_spearman + ' — weak. A higher fitted value only weakly predicts a higher realised value; the valuation is a ranking with a weak signal, not a price. (2) Is the board order stable when one comparable is dropped? Leave-one-protocol-out over all 70 comps: median Spearman ' + v.ranking_stability.lopo_median_spearman + ', worst top-10 overlap ' + v.ranking_stability.lopo_worst_top10_overlap + ' of 10. The ORDER is stable; the VERDICTS are not — ' + v.ranking_stability.lopo_total_verdict_moves + ' verdict moves across the 70 refits, because many rows sit near the adopted gate thresholds and a small refit flips them. ' + v.ranking_stability.note }),
+      el('h3', { text: 'Ranking stability: does the order hold when the model is refit? (charter v1.5)' }),
+      el('p', { class: 'sub', text: 'Two questions, answered separately. (1) Do higher-valued protocols tend to be worth more out of sample? Nested walk-forward, predicted rank vs actual rank per fold: pooled Spearman ' + v.ranking_stability.nested_pooled_spearman + ' and pooled Kendall τ ' + v.ranking_stability.nested_pooled_kendall + ' — weak on both. The pooled top-10 overlap is ' + v.ranking_stability.nested_pooled_top10_overlap + ' of 10 (precision ' + v.ranking_stability.nested_pooled_top10_precision + ') and the pooled top-20 overlap ' + v.ranking_stability.nested_pooled_top20_overlap + ' of 20 (precision ' + v.ranking_stability.nested_pooled_top20_precision + '), on the 28 pooled selection rows. A higher fitted value only weakly predicts a higher realised value; the valuation is a ranking with a weak signal, not a price — do not claim the radar finds the best protocols until the out-of-sample rank correlation improves. (2) Is the board order stable when one comparable is dropped? Leave-one-protocol-out over all 70 comps: median Spearman ' + v.ranking_stability.lopo_median_spearman + ', worst top-10 overlap ' + v.ranking_stability.lopo_worst_top10_overlap + ' of 10. The ORDER is stable; the VERDICTS are not — ' + v.ranking_stability.lopo_total_verdict_moves + ' verdict moves across the 70 refits, because many rows sit near the adopted gate thresholds and a small refit flips them. ' + v.ranking_stability.note }),
+      el('p', { class: 'sub', text: 'The negative fold, diagnosed not averaged away: ' + (v.ranking_stability.negative_fold_diagnosis ? v.ranking_stability.negative_fold_diagnosis.conclusion : 'no negative fold in this build.') }),
       el('div', { class: 'table-wrap' },
         el('table', { class: 'comps' },
-          el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Nested fold (train %)' }), el('th', { scope: 'col', text: 'Test rows' }), el('th', { scope: 'col', text: 'Spearman predicted vs actual' }), el('th', { scope: 'col', text: 'Top-3 overlap' }))),
+          el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Nested fold (train %)' }), el('th', { scope: 'col', text: 'Test rows' }), el('th', { scope: 'col', text: 'Spearman predicted vs actual' }), el('th', { scope: 'col', text: 'Kendall τ predicted vs actual' }), el('th', { scope: 'col', text: 'Top-3 overlap' }), el('th', { scope: 'col', text: 'Top-5 overlap' }))),
           el('tbody', null, v.ranking_stability.nested.map(function (r) {
             return el('tr', null,
               el('td', { text: String(r.train_pct) + '%' }),
               el('td', { class: 'num', text: String(r.n_test) }),
               el('td', { class: 'num', text: String(r.spearman_predicted_vs_actual) }),
-              el('td', { class: 'num', text: String(r.top3_overlap) + ' / 3' })
+              el('td', { class: 'num', text: String(r.kendall_predicted_vs_actual) }),
+              el('td', { class: 'num', text: String(r.top3_overlap) + ' / 3' }),
+              el('td', { class: 'num', text: String(r.top5_overlap) + ' / 5' })
             );
           }))
         )
@@ -1056,21 +1069,94 @@
       el('p', { class: 'sub', text: v.cap_sensitivity.cap_choice_statement + ' CRPS: capped ' + v.cap_sensitivity.crps_capped_dex + ' dex vs uncapped ' + v.cap_sensitivity.crps_uncapped_dex + ' dex on ' + v.cap_sensitivity.crps_n_test_rows + ' test rows — the capped distribution is slightly worse, so no claim is made that it is more accurate; the cap bounds tail risk. ' + v.cap_sensitivity.note }),
       el('div', { class: 'table-wrap' },
         el('table', { class: 'comps' },
-          el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Cap' }), el('th', { scope: 'col', text: 'Cap value' }), el('th', { scope: 'col', text: 'Pooled conditional mean value' }), el('th', { scope: 'col', text: 'Pooled mean net EV' }), el('th', { scope: 'col', text: 'Farms (a) / (b) / (c) / (d) / (e)' }), el('th', { scope: 'col', text: 'Polymarket mean net EV' }))),
+          el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Cap' }), el('th', { scope: 'col', text: 'Cap value' }), el('th', { scope: 'col', text: 'Pooled conditional mean value' }), el('th', { scope: 'col', text: 'Pooled mean net EV' }), el('th', { scope: 'col', text: 'Farms (a) / (b) / (c) / (d) / (e) / (f)' }), el('th', { scope: 'col', text: 'Polymarket mean net EV' }))),
           el('tbody', null, v.cap_sensitivity.rows.map(function (r) {
             return el('tr', null,
               el('td', { text: r.cap_label }),
               el('td', { class: 'num', text: r.cap_usd === null ? '—' : fmtUsd(r.cap_usd) }),
               el('td', { class: 'num', text: fmtUsd(r.pooled_conditional_mean_value_usd) }),
               el('td', { class: 'num', text: (r.pooled_mean_net_ev_usd >= 0 ? '+' : '−') + fmtUsd(Math.abs(r.pooled_mean_net_ev_usd)) }),
-              el('td', { class: 'num', text: r.farm_count_a + ' / ' + r.farm_count_b + ' / ' + r.farm_count_c + ' / ' + r.farm_count_d + ' / ' + r.farm_count_e }),
+              el('td', { class: 'num', text: r.farm_count_a + ' / ' + r.farm_count_b + ' / ' + r.farm_count_c + ' / ' + r.farm_count_d + ' / ' + r.farm_count_e + ' / ' + r.farm_count_f }),
               el('td', { class: 'num', text: (r.polymarket_mean_net_ev_usd >= 0 ? '+' : '−') + fmtUsd(Math.abs(r.polymarket_mean_net_ev_usd)) })
             );
           }))
         )
       ),
-      el('h3', { text: 'Parameter uncertainty: the fit itself is uncertain (charter v1.4)' }),
-      el('p', { class: 'sub', text: 'The simulation intervals on this page hold the fitted coefficients FIXED — they are outcome uncertainty only, not full uncertainty. The fit itself moves: ' + v.parameter_uncertainty.n_refits + ' bootstrap refits (seed ' + v.parameter_uncertainty.seed + ') give intercept mean ' + v.parameter_uncertainty.intercept.mean + ' (SD ' + v.parameter_uncertainty.intercept.sd + ', 95% CI ' + v.parameter_uncertainty.intercept.p025 + ' – ' + v.parameter_uncertainty.intercept.p975 + ') and slope mean ' + v.parameter_uncertainty.slope.mean + ' (SD ' + v.parameter_uncertainty.slope.sd + ', 95% CI ' + v.parameter_uncertainty.slope.p025 + ' – ' + v.parameter_uncertainty.slope.p975 + '). Median parameter SD across board rows ' + v.parameter_uncertainty.median_param_sd_dex + ' dex, maximum ' + v.parameter_uncertainty.max_param_sd_dex + ' dex. ' + v.parameter_uncertainty.note + ' Each row’s detail view carries its own parameter SD and the P10/P90 of its mean EV and P(negative) across the refits. Launch probability, cap, distribution choice, comp estimation error, actual costs, dilution, token unlocks and liquidity are further uncertainties the simulation does not price.' }),
+      el('h3', { text: 'Parameter uncertainty: the fit itself is uncertain (charter v1.5)' }),
+      el('p', { class: 'sub', text: 'The simulation intervals on this page hold the fitted coefficients FIXED — they are outcome uncertainty only, not full uncertainty. The fit itself moves: ' + v.parameter_uncertainty.n_refits + ' cluster bootstrap refits (seed ' + v.parameter_uncertainty.seed + ', one protocol per resample, the full fitting process re-run on every refit) give intercept mean ' + v.parameter_uncertainty.intercept.mean + ' (SD ' + v.parameter_uncertainty.intercept.sd + ', 95% CI ' + v.parameter_uncertainty.intercept.p025 + ' – ' + v.parameter_uncertainty.intercept.p975 + ') and slope mean ' + v.parameter_uncertainty.slope.mean + ' (SD ' + v.parameter_uncertainty.slope.sd + ', 95% CI ' + v.parameter_uncertainty.slope.p025 + ' – ' + v.parameter_uncertainty.slope.p975 + '). Sign flips across the refits: intercept ' + v.parameter_uncertainty.intercept_sign_flips + ', slope ' + v.parameter_uncertainty.slope_sign_flips + ' — the slope flips sign in ' + v.parameter_uncertainty.slope_sign_flips + ' of ' + v.parameter_uncertainty.n_refits + ' refits, so the data cannot even settle the direction of the TVL effect in every resample. Neither coefficient distribution is bimodal (intercept ' + (v.parameter_uncertainty.intercept_bimodal ? 'bimodal' : 'not bimodal') + ', slope ' + (v.parameter_uncertainty.slope_bimodal ? 'bimodal' : 'not bimodal') + '). Median parameter SD across board rows ' + v.parameter_uncertainty.median_param_sd_dex + ' dex, maximum ' + v.parameter_uncertainty.max_param_sd_dex + ' dex. ' + v.parameter_uncertainty.note + ' Each row’s detail view carries its own parameter SD, its param-aware band (the interval that includes the parameter variation, next to the outcome-only band), and the P10/P90 of its mean EV and P(negative) across the refits. Launch probability, cap, distribution choice, comp estimation error, actual costs, dilution, token unlocks and liquidity are further uncertainties the simulation does not price.' }),
+      el('h3', { text: 'Final evaluation table: one consistent table (charter v1.5)' }),
+      el('p', { class: 'sub', text: 'Target: ' + v.final_evaluation.target + ' Target date ' + v.final_evaluation.target_date + '; unit ' + v.final_evaluation.unit + '; ' + v.final_evaluation.n_independent_protocols + ' independent protocols. The walk-forward error is ' + v.final_evaluation.wf_median_abs_log_err_dex + ' dex — a typical error of about ' + v.final_evaluation.wf_typical_error_x + 'x. ' + v.final_evaluation.r2_note }),
+      el('div', { class: 'table-wrap' },
+        el('table', { class: 'comps' },
+          el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Fold' }), el('th', { scope: 'col', text: 'Test rows' }), el('th', { scope: 'col', text: 'Median |error| (dex)' }), el('th', { scope: 'col', text: 'Signed bias (dex)' }), el('th', { scope: 'col', text: 'Spearman' }), el('th', { scope: 'col', text: 'Kendall τ' }))),
+          el('tbody', null, v.final_evaluation.folds.concat([{ label: 'Pooled (selection folds)', n_test: v.final_evaluation.pooled.n_test, median_abs_log_err: v.final_evaluation.pooled.median_abs_log_err, signed_bias_log: v.final_evaluation.pooled.signed_bias_log, spearman: v.final_evaluation.pooled.spearman, kendall: v.final_evaluation.pooled.kendall }]).map(function (r) {
+            return el('tr', null,
+              el('td', { text: r.label }),
+              el('td', { class: 'num', text: String(r.n_test) }),
+              el('td', { class: 'num', text: String(r.median_abs_log_err) }),
+              el('td', { class: 'num', text: (r.signed_bias_log >= 0 ? '+' : '') + String(r.signed_bias_log) }),
+              el('td', { class: 'num', text: String(r.spearman) }),
+              el('td', { class: 'num', text: String(r.kendall) })
+            );
+          }))
+        )
+      ),
+      el('p', { class: 'sub', text: 'Baselines (pooled nested median |error|): ' + v.final_evaluation.baselines.map(function (b) { return b.name + ' ' + b.pooled_median_abs_log_err + ' dex'; }).join('; ') + '. Interval coverage (nominal vs observed): ' + v.final_evaluation.coverage.map(function (c) { return Math.round(c.nominal * 100) + '% → ' + Math.round(c.observed * 100) + '%'; }).join('; ') + '.' }),
+      el('h3', { text: 'Param-aware farming simulation: coefficient, launch-odds and distribution uncertainty in every draw (charter v1.5)' }),
+      el('p', { class: 'sub', text: v.param_aware_simulation.note + ' ' + v.param_aware_simulation.n_draws + ' draws per row per distribution over ' + v.param_aware_simulation.n_rows + ' audit rows.' }),
+      el('div', { class: 'table-wrap' },
+        el('table', { class: 'comps' },
+          el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Protocol' }), el('th', { scope: 'col', text: 'Mean EV, capped lognormal' }), el('th', { scope: 'col', text: 'Mean EV, uncapped lognormal' }), el('th', { scope: 'col', text: 'Mean EV, Student-t' }), el('th', { scope: 'col', text: 'P(negative), capped' }), el('th', { scope: 'col', text: 'Gate (d) pass fraction, adopted odds' }), el('th', { scope: 'col', text: 'Gate (d) pass fraction, conservative odds' }))),
+          el('tbody', null, v.param_aware_simulation.rows.slice(0, 12).map(function (r) {
+            var byDist = {};
+            r.distributions.forEach(function (d) { byDist[d.distribution] = d; });
+            return el('tr', null,
+              el('td', { text: r.slug }),
+              el('td', { class: 'num', text: (byDist['capped-lognormal'].mean_ev_usd >= 0 ? '+' : '−') + fmtUsd(Math.abs(byDist['capped-lognormal'].mean_ev_usd)) }),
+              el('td', { class: 'num', text: (byDist['lognormal'].mean_ev_usd >= 0 ? '+' : '−') + fmtUsd(Math.abs(byDist['lognormal'].mean_ev_usd)) }),
+              el('td', { class: 'num', text: (byDist['student-t'].mean_ev_usd >= 0 ? '+' : '−') + fmtUsd(Math.abs(byDist['student-t'].mean_ev_usd)) }),
+              el('td', { class: 'num', text: Math.round(byDist['capped-lognormal'].prob_negative * 100) + '%' }),
+              el('td', { class: 'num', text: Math.round(r.pass_fraction_d_adopted * 100) + '%' }),
+              el('td', { class: 'num', text: Math.round(r.pass_fraction_d_conservative * 100) + '%' })
+            );
+          }))
+        )
+      ),
+      el('p', { class: 'sub', text: 'The table shows the 12 highest-ranked audit rows; the full ' + v.param_aware_simulation.n_rows + ' rows ship in data.js. The four gate-(d) candidates pass (d) in only 44–66% of the paired (refit, launch-odds) draws under the adopted odds — and in 0% under the conservative odds, as the structural analysis predicts. The Student-t mean EVs are far higher than the capped lognormal’s because its heavy tail inflates the conditional mean; the P(negative) barely moves, because it is set by the launch odds, not the tail.' }),
+      el('h3', { text: 'Gate (d) economic audit: why 3x and 85% (charter v1.5)' }),
+      el('p', { class: 'sub', text: v.gate_threshold_grid.note }),
+      el('div', { class: 'table-wrap' },
+        el('table', { class: 'comps' },
+          el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Threshold multiple' }), el('th', { scope: 'col', text: 'P(negative) ceiling' }), el('th', { scope: 'col', text: 'Farms (adopted odds)' }), el('th', { scope: 'col', text: 'Farms (conservative odds)' }))),
+          el('tbody', null, v.gate_threshold_grid.rows.map(function (r) {
+            return el('tr', null,
+              el('td', { text: String(r.multiple) + 'x' }),
+              el('td', { class: 'num', text: Math.round(r.ceiling * 100) + '%' }),
+              el('td', { class: 'num', text: String(r.farm_count_adopted) }),
+              el('td', { class: 'num', text: String(r.farm_count_conservative) })
+            );
+          }))
+        )
+      ),
+      el('p', { class: 'sub', text: 'Breakeven multiples: ' + v.gate_threshold_grid.breakeven_multiple_adopted + 'x at the adopted odds, ' + v.gate_threshold_grid.breakeven_multiple_conservative + 'x under the conservative odds — the 3x multiple is a conditional-payoff screen, not a profitability proof. The 85% ceiling demands ' + Math.round(v.gate_threshold_grid.required_launch_success_d_adopted * 1000) / 10 + '% of launches clear breakeven at the adopted odds and ' + Math.round(v.gate_threshold_grid.required_launch_success_d_conservative * 1000) / 10 + '% under the conservative odds — impossible under the conservative odds, so gate (d) can never fire there.' }),
+      el('h3', { text: 'Verdict stability: how often the verdict survives a refit (charter v1.5)' }),
+      el('p', { class: 'sub', text: 'Over ' + v.verdict_stability.n_refits + ' leave-one-protocol-out refits, ' + v.verdict_stability.unique_rows_ever_flipped + ' of ' + DATA.board_size + ' rows flip their verdict at least once; the median row flips in ' + v.verdict_stability.moves_per_row_median + ' refits and the worst in ' + v.verdict_stability.moves_per_row_max + '. ' + Math.round(v.verdict_stability.pct_pairs_on_main_verdict * 1000) / 10 + '% of (row, refit) pairs stay on the production verdict. The most frequent moves are ' + v.verdict_stability.most_frequent_moves.map(function (m) { return m.from + ' → ' + m.to + ' (' + m.count + ')'; }).join(', ') + '. Ranks are shown as ranges on the board wherever the data does not support one precise rank — the LOPO order is stable (median Spearman ' + v.ranking_stability.lopo_median_spearman + '), but individual ranks move, and the verdicts move more than the ranks.' }),
+      el('div', { class: 'table-wrap' },
+        el('table', { class: 'comps' },
+          el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Protocol' }), el('th', { scope: 'col', text: 'Production verdict' }), el('th', { scope: 'col', text: 'Refits agreeing' }), el('th', { scope: 'col', text: 'Most frequent alternative' }), el('th', { scope: 'col', text: 'Rank range (min–median–max)' }))),
+          el('tbody', null, v.verdict_stability.rows.slice().sort(function (a, b) { return a.n_agreeing_refits - b.n_agreeing_refits; }).slice(0, 10).map(function (r) {
+            return el('tr', null,
+              el('td', { text: r.slug }),
+              el('td', { text: r.main_verdict }),
+              el('td', { class: 'num', text: String(r.n_agreeing_refits) + ' / ' + v.verdict_stability.n_refits }),
+              el('td', { text: r.most_frequent_alternative === null ? '—' : r.most_frequent_alternative }),
+              el('td', { class: 'num', text: String(r.rank_range[0]) + '–' + String(r.rank_range[1]) + '–' + String(r.rank_range[2]) })
+            );
+          }))
+        )
+      ),
+      el('h3', { text: 'Reproducibility: rebuild this board (charter v1.5)' }),
+      el('p', { class: 'sub', text: 'Dataset: ' + DATA.reproducibility.dataset + '. Snapshot SHA-256: ' + DATA.reproducibility.snapshot_sha256 + '. Charter ' + DATA.reproducibility.charter_version + ', model ' + DATA.reproducibility.model_version + '. Locked constants: ' + Object.keys(DATA.reproducibility.constants).map(function (k) { return k + ' = ' + DATA.reproducibility.constants[k]; }).join(', ') + '. Seeds: ' + Object.keys(DATA.reproducibility.seeds).map(function (k) { return k + ' = ' + DATA.reproducibility.seeds[k]; }).join(', ') + '. Rebuild: ' + DATA.reproducibility.reproduce_commands.join(' ; ') + '.' }),
       el('h3', { text: 'Winsorization test: capping rain at the 95th percentile, tested not adopted (charter v1.4)' }),
       el('p', { class: 'sub', text: 'The Gemini candidate: cap the dated comparables’ market caps at the 95th percentile (' + fmtUsd(v.winsorization_test.cap_p95_usd) + ') before ANY fitting, rain included. Winsorized fit: intercept ' + v.winsorization_test.winsorized_intercept + ', slope ' + v.winsorization_test.winsorized_coef_log_tvl + ' (production ' + FIT.intercept + ' / ' + FIT.coef_log_tvl + '). Nested selection-pooled error winsorized ' + v.winsorization_test.winsorized_selection_pooled_dex + ' dex vs production ' + v.winsorization_test.production_selection_pooled_dex + ' dex — improvement ' + v.winsorization_test.selection_improvement_dex + ' dex. Winsorized LOPO worst |Δ predicted log| ' + v.winsorization_test.winsorized_lopo_max_abs_delta_predicted_log + ' dex vs production ' + v.winsorization_test.production_lopo_max_abs_delta_predicted_log + ' dex; winsorized board vs production: Spearman ' + v.winsorization_test.board_spearman_vs_production + ', top-10 overlap ' + v.winsorization_test.top10_overlap_vs_production + '/10, top-20 ' + v.winsorization_test.top20_overlap_vs_production + '/20; winsorized farms under the adopted gate ' + v.winsorization_test.farm_count_adopted_gate + '. ' + v.winsorization_test.reason }),
       el('h3', { text: 'Conformal slices: coverage by regime, TVL, age, OOD (charter v1.4)' }),
@@ -1144,12 +1230,12 @@
       el('div', { class: 'equation' },
         el('div', null, el('span', { text: 'TVL + $25M floor (log10)' }), el('b', { class: 'num', text: fmtUsd(row.tvl_usd) + ' (' + Math.log10(row.tvl_usd + FIT.size_floor_usd).toFixed(2) + ')' })),
         el('div', null, el('span', { text: 'Seven-day change (display only — not a model input)' }), el('b', { class: 'num', text: fmtPct(row.change_7d) })),
-        el('div', null, el('span', { text: 'Age with no token -> launch odds (base rate — age does not change the board odds under v1.4)' }), el('b', { class: 'num', text: (row.age_days === null ? 'undated' : fmtAge(row.age_days)) + ' -> ' + fmtOdds(row.launch_odds) })),
+        el('div', null, el('span', { text: 'Age with no token -> launch odds (base rate — age does not change the board odds under v1.5)' }), el('b', { class: 'num', text: (row.age_days === null ? 'undated' : fmtAge(row.age_days)) + ' -> ' + fmtOdds(row.launch_odds) })),
         el('div', null, el('span', { text: 'Category adjustment' }), el('b', { class: 'num', text: (row.category_adjustment >= 0 ? '+' : '') + row.category_adjustment.toFixed(2) + ' dex' })),
         el('div', null, el('span', { text: 'Main-chain adjustment' }), el('b', { class: 'num', text: (row.chain_adjustment >= 0 ? '+' : '') + row.chain_adjustment.toFixed(2) + ' dex' })),
         el('div', null, el('span', { text: 'Predicted log10 value if it launches' }), el('b', { class: 'num', text: String(row.predicted_log_value.toFixed(3)) })),
         el('div', null, el('span', { text: 'Value if it launches (10^predicted)' }), el('b', { class: 'num', text: fmtUsd(row.value_if_launches_usd) })),
-        el('div', null, el('span', { text: 'Launch odds (base rate, charter v1.4)' }), el('b', { class: 'num', text: fmtOdds(row.launch_odds) })),
+        el('div', null, el('span', { text: 'Launch odds (base rate, charter v1.5)' }), el('b', { class: 'num', text: fmtOdds(row.launch_odds) })),
         el('div', null, el('span', { text: 'Launch odds, Platt-calibrated curve (diagnostic — not used)' }), el('b', { class: 'num', text: fmtOdds(row.launch_odds_platt) })),
         el('div', null, el('span', { text: 'Implied value (value if it launches x launch odds)' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) })),
         el('div', null, el('span', { text: 'Mean expected net return (one simulation array: launch Bernoulli x capped lognormal value)' }), el('b', { class: 'num', text: (row.expected_value_usd >= 0 ? '+' : '−') + fmtUsd(Math.abs(row.expected_value_usd)) })),
@@ -1160,9 +1246,13 @@
         el('div', null, el('span', { text: 'Out-of-distribution (band x' + row.ood.band_multiplier + ', confidence: ' + row.ood.confidence + ')' }), el('b', { class: 'num', text: row.ood.is_ood ? 'yes — ' + [row.ood.unseen_chain ? 'unseen chain' : null, row.ood.unseen_category ? 'unseen category' : null, row.ood.tvl_out_of_range ? 'TVL out of range' : null, row.ood.age_out_of_range ? 'age out of range' : null].filter(function (x) { return x; }).join(', ') : 'no' })),
         el('div', null, el('span', { text: 'P10 value / EV at P10' }), el('b', { class: 'num', text: fmtUsd(row.p10_value_usd) + ' / ' + (row.ev_at_p10_usd >= 0 ? '+' : '−') + fmtUsd(Math.abs(row.ev_at_p10_usd)) })),
         el('div', null, el('span', { text: 'Value band P25–P75 (±' + DATA.validation.band_halfwidth_dex + ' dex' + (row.ood.is_ood ? ', x' + row.ood.band_multiplier + ' OOD' : '') + ')' }), el('b', { class: 'num', text: fmtUsd(row.band_p25_usd) + ' – ' + fmtUsd(row.band_p75_usd) })),
-        el('div', null, el('span', { text: 'Parameter SD of the predicted log value (200 bootstrap refits — model uncertainty, separate from the band)' }), el('b', { class: 'num', text: String(row.predicted_log_param_sd_dex) + ' dex' })),
-        el('div', null, el('span', { text: 'Mean EV, P10–P90 across the 200 refits (parameter uncertainty)' }), el('b', { class: 'num', text: (row.ev_mean_param_usd[0] >= 0 ? '+' : '−') + fmtUsd(Math.abs(row.ev_mean_param_usd[0])) + ' – ' + (row.ev_mean_param_usd[1] >= 0 ? '+' : '−') + fmtUsd(Math.abs(row.ev_mean_param_usd[1])) })),
-        el('div', null, el('span', { text: 'P(negative return), P10–P90 across the 200 refits' }), el('b', { class: 'num', text: Math.round(row.prob_negative_param[0] * 100) + '% – ' + Math.round(row.prob_negative_param[1] * 100) + '%' }))
+        el('div', null, el('span', { text: 'Param-aware value band P25–P75 (total SD ' + row.param_total_sd_dex + ' dex — outcome + parameter variation)' }), el('b', { class: 'num', text: fmtUsd(row.param_band_p25_usd) + ' – ' + fmtUsd(row.param_band_p75_usd) })),
+        el('div', null, el('span', { text: 'Parameter SD of the predicted log value (' + DATA.validation.parameter_uncertainty.n_refits + ' cluster bootstrap refits — model uncertainty, separate from the band)' }), el('b', { class: 'num', text: String(row.predicted_log_param_sd_dex) + ' dex' })),
+        el('div', null, el('span', { text: 'Mean EV, P10–P90 across the ' + DATA.validation.parameter_uncertainty.n_refits + ' refits (parameter uncertainty)' }), el('b', { class: 'num', text: (row.ev_mean_param_usd[0] >= 0 ? '+' : '−') + fmtUsd(Math.abs(row.ev_mean_param_usd[0])) + ' – ' + (row.ev_mean_param_usd[1] >= 0 ? '+' : '−') + fmtUsd(Math.abs(row.ev_mean_param_usd[1])) })),
+        el('div', null, el('span', { text: 'P(negative return), P10–P90 across the ' + DATA.validation.parameter_uncertainty.n_refits + ' refits' }), el('b', { class: 'num', text: Math.round(row.prob_negative_param[0] * 100) + '% – ' + Math.round(row.prob_negative_param[1] * 100) + '%' })),
+        el('div', null, el('span', { text: 'Rank range across the 70 LOPO refits (min–median–max)' }), el('b', { class: 'num', text: String(row.rank_range[0]) + '–' + String(row.rank_range[1]) + '–' + String(row.rank_range[2]) })),
+        el('div', null, el('span', { text: 'Verdict stability: refits agreeing with the production verdict' }), el('b', { class: 'num', text: (function () { var s = DATA.validation.verdict_stability.rows.filter(function (x) { return x.slug === row.slug; })[0]; if (!s) return '—'; return String(s.n_agreeing_refits) + ' / ' + DATA.validation.verdict_stability.n_refits + (s.most_frequent_alternative ? ' — most frequent alternative: ' + s.most_frequent_alternative : ' — never flips'); })() })),
+        el('div', null, el('span', { text: 'Gate (d) pass fraction under parameter + launch-odds uncertainty (paired draws)' }), el('b', { class: 'num', text: (function () { var s = DATA.validation.param_aware_simulation.rows.filter(function (x) { return x.slug === row.slug; })[0]; if (!s) return 'not an audit row'; return Math.round(s.pass_fraction_d_adopted * 100) + '% adopted odds / ' + Math.round(s.pass_fraction_d_conservative * 100) + '% conservative odds'; })() }))
       ),
       el('p', { class: 'sub', text: 'Launch odds: ' + row.launch_odds_source + ' — ' + row.launch_odds_cohort + ', horizon ' + row.launch_odds_horizon_months + ' months, supporting observations n=' + row.launch_odds_n_support + ', in the comparable risk set: ' + (row.launch_odds_in_risk_set ? 'yes' : 'no') + '. This is a cohort rate, not an individual probability for this protocol.' }),
       el('p', { class: 'sub', text: 'Decision trace — why this verdict: ' + row.decision_trace.join(' ') }),
@@ -1172,7 +1262,7 @@
     dialog.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Farm verdict' }),
       el('p', null, el('span', { class: 'verdict ' + row.verdict, text: row.verdict.toUpperCase() }), ' ', el('span', { class: 'sub', text: 'Plan cost about $' + row.plan_cost_usd + ' (standard $10,000 deposit plus seven transactions of gas plus opportunity cost). ' + verdictStep(row) })),
-      el('p', { class: 'sub', text: 'p_L is the base rate (' + Math.round(DATA.seasoning.base_rate * 1000) / 10 + '%) for every row under charter v1.4 — the seasoning curve is diagnostic only and does not price any row. p_BE is the launch probability at which farming breaks even. A farm verdict means the adopted gate (variant ' + DATA.validation.gate_test.adopted + ') passes under the CONSERVATIVE launch odds (' + (DATA.validation.launch_odds_decision.conservative_lower_bound * 100).toFixed(1) + '%); a marginal verdict is a positive mean EV under the adopted odds that fails the conservative gate, or a negative EV with break-even odds ≤33%. The launch odds, not the valuation alone, decide it.' }),
+      el('p', { class: 'sub', text: 'p_L is the base rate (' + Math.round(DATA.seasoning.base_rate * 1000) / 10 + '%) for every row under charter v1.5 — the seasoning curve is diagnostic only and does not price any row. p_BE is the launch probability at which farming breaks even. A farm verdict means the adopted gate (variant ' + DATA.validation.gate_test.adopted + ') passes under the CONSERVATIVE launch odds (' + (DATA.validation.launch_odds_decision.conservative_lower_bound * 100).toFixed(1) + '%); a marginal verdict is a positive mean EV under the adopted odds that fails the conservative gate, or a negative EV with break-even odds ≤33%. The launch odds, not the valuation alone, decide it.' }),
       el('h3', { text: 'Farm plan' }),
       el('ol', { class: 'steps' }, steps.map(function (s) {
         var at = s.indexOf(' Cost: ');

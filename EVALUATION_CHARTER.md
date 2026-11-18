@@ -1,16 +1,18 @@
-# Evaluation Charter v1.4 — Token Radar (radar-11)
+# Evaluation Charter v1.5 — Token Radar (radar-12)
 
-Locked **before** fitting radar-11. Any change after results creates a new
-charter version and labels the prior results **exploratory**. Radar-10 numbers
-were computed under charter v1.3; the evaluation procedure changed in v1.4
-(outlier audit with with/without analysis, ranking-stability evaluation,
-segmented OOD report, cap-as-risk-control stress test, outcome-vs-parameter
-uncertainty split, launch-probability labeling, per-protocol decision trace,
-single-final-artifact rerun, Gemini conditional-EV gate candidates (d)/(e),
-and the Rain winsorization candidate tested prespecified), so radar-10
-numbers are **exploratory under v1.4** and must not be quoted as v1.4
-results. Radar-10 is frozen in `hidden_files/radar-10-freeze/` (board, data,
-dossier, metrics, CHARTER-v1.3.md, FREEZE.md, snapshot sha256
+Locked **before** fitting radar-12. Any change after results creates a new
+charter version and labels the prior results **exploratory**. Radar-11 numbers
+were computed under charter v1.4; the evaluation procedure changed in v1.5
+(negative-fold diagnosis with Kendall rank correlation and pooled top-k
+overlap, cluster bootstrap with 2000 refits and multimodality/sign-flip
+checks, parameter uncertainty folded into the farming simulation, economic
+audit of gate (d) with a threshold-sensitivity grid and an odds-consistent
+candidate (f) under a two-layer adoption rule, per-protocol verdict
+stability with rank ranges, a final evaluation table, and a
+reproducibility package), so radar-11 numbers are **exploratory under
+v1.5** and must not be quoted as v1.5 results. Radar-11 is frozen in
+`hidden_files/radar-11-freeze/` (board, data, dossier, metrics,
+CHARTER-v1.4.md, FREEZE.md, snapshot sha256
 42a71213519479f3a180cc5010cbbf6bd18a2447fa0ad29e4c5122b6c9184393).
 
 ## Why v1.3 exists — the defect it fixes
@@ -73,6 +75,30 @@ merely to produce a target number of farms. v1.4 does ChatGPT's minimum
 conditions first and tests Gemini's two proposals as prespecified
 candidates — adopted only if the prespecified rule says so, never to hit a
 farm count.
+
+## Why v1.5 exists — the defect it fixes
+
+Under v1.4 the valuation ranking is weak out of sample (pooled nested
+Spearman 0.2895, with the 80% fold NEGATIVE at −0.2857), the regression
+parameters are weakly identified (intercept bootstrap 95% CI [1.13, 6.40];
+median parameter SD 0.2163 dex), and verdicts/rankings are sensitive to
+input changes and refits (543 verdict moves across 70 LOPO refits; TVL
+±10% moves 177–178 of 198 rankings) — while the EV simulation still holds
+the fitted coefficients FIXED (outcome uncertainty only), and gate (d),
+adopted in v1.4, fires 4 candidates under the adopted odds but none
+survives the conservative-odds stress test, with no economic justification
+for its 3× / 85% thresholds on record. Two independent reviews of
+radar-11 (Q9) split again: Gemini said YES to submitting now (no further
+code or model changes — the peak of quantitative research in this
+hackathon; 0 farms only a cosmetic/product flaw); ChatGPT said NO (the
+three blockers above) and named the top priorities: negative-fold
+diagnosis, cluster bootstrap, and a farming simulation that includes
+parameter uncertainty. Both agreed rain and obol are valid observations
+that must not be deleted, and that the gate threshold must not be lowered
+merely to produce FARM verdicts. v1.5 does ChatGPT's priorities first —
+diagnosis before any model change — and audits gate (d) economically,
+testing an odds-consistent candidate only under a prespecified rule that
+cannot be chosen after seeing farm counts.
 
 ## Question, target, grain, decision time
 
@@ -579,7 +605,10 @@ whether or not the bars are met.
 
 The v1.3 OOD multiplier validation pooled all OOD test rows (n = 28) and
 called ×1.0 "validated" — on 28 rows that is a measurement, not a
-validation. v1.4 segments the nested test rows (all 5 folds, 35 rows),
+validation. v1.4 segments the nested test rows (the selection folds
+50–80, 28 rows — the v1.4 text that said "all 5 folds, 35 rows" was a
+mistake, corrected in v1.5: the 90% fold is the untouched final test and
+is excluded from every selection metric),
 each classified relative to its own fold's training domain, into:
 in-distribution (0 flags); unseen-chain-only (only the chain flag);
 unseen-category-only (only the category flag); partial-other (exactly 1
@@ -686,6 +715,249 @@ improves on production's by > 0.01 dex.** Otherwise production stays
 unwinsorized and the winsorized variant is reported as a sensitivity
 only. The valuation fit stays OLS 3.7686/0.4105 unless this rule fires.
 
+## Negative-fold diagnosis (v1.5) — why the 80% fold ranks backwards
+
+The pooled nested Spearman ρ (0.2895 in v1.4) is the headline ranking
+metric: it answers whether protocols the model values more highly
+actually turn out to be worth more, pooled over the 28 selection-fold
+test rows. One fold — the 80% fold — is NEGATIVE (−0.2857). A negative
+fold is diagnosed, never dropped and never averaged away:
+
+- The fold's diagnostics table (already in `nested_fold_diagnostics`):
+  test window, n, median TVL, median age, category mix, unseen
+  categories/chains, median signed error, median absolute error, P90
+  error, and the per-row errors.
+- **Rank inversions:** the pairs (predicted order vs actual order) that
+  flip inside the fold, and which rows drive them — the signed errors of
+  the flipped rows, named.
+- **Leave-one-row-out Spearman inside the fold:** drop each of the
+  fold's 7 test rows in turn and recompute the fold Spearman on the
+  remaining 6 — reported per dropped row, so the reader sees whether the
+  negative sign survives the removal of any single row or is carried by
+  one row.
+- **Training-window summary:** n train, date range, categories and
+  chains present, and which of the test rows' categories/chains are
+  unseen in training.
+- **Pooled sensitivity:** the pooled selection-fold Spearman with the
+  80% fold excluded, reported next to the headline pooled number — a
+  sensitivity, not a replacement: the headline stays pooled over all 28
+  rows.
+
+## Ranking evaluation, completed (v1.5) — Spearman and Kendall, per fold and pooled
+
+v1.4 reported Spearman per fold and pooled, and top-3 overlap per fold.
+v1.5 completes the ranking evaluation before any model change:
+
+- **Kendall τ** (predicted vs actual) per fold and pooled over the 28
+  selection rows — a second rank correlation that penalizes discordant
+  pairs directly, reported next to Spearman; the two must be read
+  together, never averaged into one number.
+- **Top-k overlap and precision, pooled:** top-10 and top-20 overlap
+  and precision on the 28 pooled selection rows (the predicted top-10
+  against the actual top-10, and the same for top-20). Per-fold top-k
+  is reported as top-3 and top-5 overlap only — a 7-row test set cannot
+  support a top-10 or top-20 overlap (all 7 rows are inside any top-10),
+  so per-fold top-10/top-20 numbers would be vacuous and are not
+  reported.
+- **Pooled rank correlation is the main metric.** LOPO Spearman
+  (0.9981 in v1.4) measures stability of the order under a refit, NOT
+  predictive accuracy — a model can be perfectly stable and still rank
+  badly. The dashboard never presents LOPO Spearman as evidence that
+  the ranking predicts value; the pooled nested Spearman and Kendall
+  are the predictive ranking evidence.
+- **No claim before the ranking improves.** The radar does not claim to
+  find the best protocols until the pooled out-of-sample rank
+  correlation is reported honestly per fold and pooled; a weak pooled
+  ρ is stated as a weak ranking, not hidden behind the level error.
+
+## Cluster bootstrap (v1.5) — 2000 refits, protocol as the resample unit
+
+The v1.4 bootstrap (200 refits, seed 20261119) becomes a **cluster
+bootstrap per protocol with 2000 refits** (same seed 20261119 — the
+mulberry32 stream is prefix-stable, so the first 200 refits are
+identical to v1.4's). The resample unit is the PROTOCOL: each protocol
+contributes exactly one comparable row (duplicate slugs are rejected by
+the snapshot validation, and `lopo_influence.observations_per_protocol`
+is 1), so a protocol-cluster bootstrap is the row bootstrap here — the
+equivalence is stated and checked, not assumed. Each refit redoes the
+whole fitting process (coefficients AND category/chain group
+adjustments, via `fitRegression` on the resampled rows) — a bootstrap
+that reuses the production adjustments would understate the uncertainty.
+Reported:
+
+- The coefficient distribution (intercept and slope: mean, SD, 95%
+  interval) on 2000 refits, with the production fit inside the
+  intervals.
+- **Slope sign flips:** the count of refits whose slope is ≤ 0, and
+  **intercept sign flips:** the count whose intercept is ≤ 0 — a
+  slope that flips sign under resampling is not identified.
+- **Multimodality flag:** a 20-bin histogram of each coefficient; let
+  the two highest non-adjacent peaks be p1, p2 (peak = bin count) and
+  the valley v be the lowest bin count between them. Flag "bimodal" if
+  v < 0.5 × min(p1, p2) AND the peaks are more than 1 SD apart. The
+  flag is descriptive — it reports shape, it gates nothing.
+- **Parameter-aware band:** per board row, the total SD
+  √(σ² + paramSD²) (outcome σ from the conformal band, paramSD from
+  the bootstrap) and the P25/P75 implied value under that total SD,
+  reported next to the outcome-only band. The printed band stays
+  outcome-only (the v1.4 decision); the param-aware band is the honest
+  interval for a reader who wants the model's own uncertainty included.
+  A simulation that holds the parameters fixed and randomizes only
+  launch and value is outcome uncertainty only, and the dashboard
+  labels which is which.
+
+## Parameter uncertainty in the farming simulation (v1.5)
+
+The v1.4 EV simulation holds the fitted coefficients fixed and
+randomizes only launch and value. v1.5 adds a **parameter-aware
+simulation** for every audit row (farm rows plus every row with a
+positive mean EV under the adopted odds — the same 96 rows as the
+distribution tournament), 5000 draws per row, same seeds, same paired
+structure:
+
+- Each draw combines (i) a **coefficient draw** — one of the 2000
+  bootstrap refits, chosen by a seeded PRNG, whose predicted log is
+  the row's value center for that draw (this IS the parameter
+  uncertainty; the per-row paramSD is NOT added again — adding it
+  would double-count); (ii) a **launch-odds draw** — one of the 2000
+  base-rate bootstrap resamples (seed 20261107, the same resamples
+  whose 2.5th percentile is the conservative lower bound), chosen by
+  a seeded PRNG; (iii) a **value draw** — the production distribution
+  (capped lognormal) centered on the refit's predicted log with the
+  row's outcome σ.
+- **Distribution choice** is folded in as a sensitivity: the same
+  5000-draw param-aware simulation is run under three distributions —
+  the production capped lognormal, the uncapped lognormal, and the
+  Student-t — and the mean EV and P(negative) are reported per
+  distribution. A decision that flips across distributions is
+  distribution-sensitive and the report says so.
+- Per audit row, reported: param-aware mean EV and P(negative) under
+  each of the three distributions; and, for the gate-(d) candidates,
+  the **paired pass fractions** — over 2000 paired (bootstrap refit,
+  base-rate resample) draws, the fraction in which the row passes gate
+  (d) under the adopted odds and under the conservative odds, computed
+  with the analytic closed-form gate statistics from each refit's
+  predicted log. A candidate whose pass fraction collapses under
+  parameter + launch-odds uncertainty is not a reliable FARM, however
+  it looks at the point estimate.
+
+## Gate (d) economic audit (v1.5) — what 3× and 85% actually mean
+
+Gate (d) — conditional mean EV > 3× plan cost AND P(negative return)
+≤ 0.85 — was adopted in v1.4 on the prespecified eligibility rule
+(fires + filters under the adopted odds, lowest worst-farm P(negative)
+among eligible policies). v1.5 audits the thresholds economically,
+before any further gate change:
+
+- **The breakeven multiple.** Unconditional mean EV > 0 requires
+  conditional mean EV > (1 − p_L) / p_L × plan cost: **5.09×** at the
+  adopted odds (p_L = 16.43%) and **6.33×** at the conservative odds
+  (p_L = 13.64%). The 3× hurdle is BELOW the breakeven multiple at
+  either odds — so 3× is a **conditional-payoff screen** (a launch
+  must pay at least 3× the plan cost to be worth the operational
+  effort, fees and slippage), NOT a standalone profitability proof.
+  A 3×-passing row can still have a negative unconditional mean EV;
+  the P(negative) ceiling and the conservative-odds stress test carry
+  the risk control, and the audit says so plainly.
+- **The 85% ceiling, in launch-success terms.** P(negative) =
+  1 − p_L × P(value clears breakeven | launch), so P(negative) ≤ 0.85
+  at the adopted odds means **at least 91.3% of launches must clear
+  breakeven** (0.15 / 0.1643). Under the conservative odds the
+  structural floor is 1 − 0.1364 = **0.8636 > 0.85** — the ceiling
+  demands a launch-success rate of 0.15 / 0.1364 = **110%**, which is
+  impossible. **Gate (d) + the conservative-odds stress test makes
+  FARM structurally impossible by construction**, for every row, on
+  any data. The v1.4 board's 0 farms is therefore a design outcome of
+  the (d) ceiling under the stress test, not a data outcome — and the
+  audit documents the inconsistency instead of hiding it behind the
+  farm count.
+- **Threshold-sensitivity grid (diagnostic, not a selection device).**
+  The (d)-shape policy is swept over conditional-mean multiples
+  {1×, 2×, 3×, 4×, 5×, 6×} × P(negative) ceilings
+  {0.80, 0.85, 0.90, 0.95}, with farm counts under the adopted odds
+  AND under the conservative odds. Ceilings above 1 − p_L are
+  infeasible under that odds layer (the floor) and the grid shows
+  0s there — the feasible region is visible, not assumed. The grid
+  reports; it does not select.
+- **Candidate (f) — the odds-consistent ceiling.** Conditional mean EV
+  > 3× plan cost AND P(negative return) ≤ 1 − 0.75 × p_L, where p_L is
+  the odds of the layer the gate is evaluated under (adopted: ceiling
+  0.8768; conservative: ceiling 0.8977). The ceiling now means "at
+  least 75% of launches clear breakeven" at whatever odds are used —
+  odds-consistent by construction, so a (f) farm is possible under
+  both layers. (f) is a **correction of an odds-inconsistent
+  constant**, not a loosening to hit a farm count: the 3× multiple is
+  unchanged, and the ceiling is derived from a stated launch-success
+  rate (75%), not from looking at farm counts.
+- **Two-layer adoption rule (v1.5, prespecified before results).** A
+  policy is eligible only if it **fires AND filters under BOTH the
+  adopted odds and the conservative odds**, and its worst farm's
+  P(negative return) under the conservative layer is ≤ 0.90 (the risk
+  ceiling). Among eligible policies, adopt the one with the **lowest
+  worst-farm P(negative) under the conservative layer**; ties go to
+  the earlier letter. Policies (a)–(e) are re-tested under this rule
+  alongside (f). If no policy is eligible, keep (a) and report the
+  resulting FARM count as-is — the farm count is never a target, and
+  the rule is never re-chosen after seeing which policy farms most.
+  The gate test and the board verdict are now consistent: a policy
+  that cannot farm on the board cannot be adopted as the farm policy.
+
+## Verdict stability (v1.5) — how often does a verdict survive a refit?
+
+The v1.4 LOPO verdict moves (543 across 70 refits) count moves per
+dropped comp. v1.5 reports the other axis — per board row, across the
+70 LOPO refits (analytic verdicts under the adopted gate and the
+conservative odds):
+
+- Per row: the main (production) verdict; the count of refits
+  producing each verdict (farm / marginal / skip); the number of
+  refits agreeing with the main verdict; the most frequent alternative
+  verdict; and the flip drivers — the dropped comps whose refits flip
+  this row, with the flip direction.
+- Aggregates: the number of unique protocols that ever change verdict;
+  moves per protocol (median and max); the percentage of (row, refit)
+  pairs staying on the main verdict; and the most frequent
+  cross-category moves (e.g. marginal→skip: n).
+- **Rank ranges.** Per row, the min / median / max rank across the 70
+  LOPO refits. The dashboard shows a row's rank as a RANGE where the
+  range is non-trivial (min ≠ max) — a single precise rank is not
+  forced where the data does not support one. The production rank is
+  always inside its own range; a range that excludes it fails the
+  build.
+
+## Final evaluation table (v1.5) — one table, every headline number
+
+One structured table assembles the headline evaluation from the same
+validation numbers, with no new fitting: target and target date; unit
+of analysis (one protocol); the number of independent protocols (70
+dated comps; one observation per protocol); the number of folds and
+the size of each fold (nested 50/60/70/80/90, 7 test rows each; 5-fold
+CV, 14 rows each; walk-forward 70/30, 21 test rows); the comparison
+baseline (OLS on identical rows and folds; ridge λ = 1.0; base-rate
+launch odds); median absolute error and median signed bias, per fold
+and pooled (selection folds 50–80 and all folds 50–90, separately);
+rank correlation (Spearman and Kendall, per fold and pooled over the
+28 selection rows); and interval coverage (50/80/90% nominal vs
+observed). The walk-forward error (0.5145 dex) is a typical error of
+~3.27× and is stated as such; R² (0.4236) is an in-sample fit measure,
+never presented as out-of-sample evidence. No error is summarized into
+a single winning number.
+
+## Reproducibility package (v1.5)
+
+The build ships a reproducibility record (in `data.js` and in
+`REPRODUCE.md` at the entry root): the snapshot's sha256 (computed at
+build time from the input file, never typed by hand); the dataset
+version (snapshot `as_of` + source); the charter version; the model
+version; every locked constant (TVL floor, purge gap, ridge λ, verdict
+thresholds, gate policies, seeds); the per-protocol outputs
+(`board.json`, `data.js`); and the exact commands to rebuild from the
+sealed snapshot, run the leakage tests, and verify byte-identical
+determinism (two builds, `diff -r` clean) and the frozen benchmark
+(the radar-11 freeze in `hidden_files/radar-11-freeze/`). A build
+whose numbers cannot be reproduced from the sealed snapshot and the
+recorded seeds fails the charter.
+
 ## Single final artifact (v1.4)
 
 board.json, data.js, the dashboard, the screenshots, dossier.json, and
@@ -733,6 +1005,26 @@ hand — all are read from the build output.
   ev_p50 ≤ ev_p75 ≤ ev_p90, 0 ≤ p_negative ≤ 1, p_negative ≥ 1 − p_L, and the
   simulated p_negative must agree with the analytic value within 0.02).
   All checks exit non-zero on failure.
+
+- **v1.5 checks (run at build time, fail the build):** the pooled
+  top-10/top-20 overlap is computed on the 28 pooled selection rows
+  and never exceeds 10 / 20; the negative-fold diagnosis reproduces
+  the 80% fold's Spearman (−0.2857) and its leave-one-row-out
+  Spearman values; the cluster bootstrap runs 2000 refits, every
+  coefficient is finite, and the slope/intercept sign-flip counts are
+  reported; the param-aware simulation's P(negative) stays in [0, 1]
+  and its paired pass fractions stay in [0, 1]; gate (d) farms 0 rows
+  under the conservative odds (the structural floor 1 − 0.1364 =
+  0.8636 exceeds the 0.85 ceiling — asserted, not assumed); the
+  candidate (f) ceiling scales with the odds layer (0.8768 adopted,
+  0.8977 conservative); the two-layer adoption rule adopts a policy
+  only if it fires and filters under BOTH odds layers, or falls back
+  to (a) with a stated reason; every board row's verdict-stability
+  refit counts sum to 70 and the production rank lies inside its own
+  rank range; the final evaluation table's pooled numbers reconcile
+  with the validation (median absolute error, Spearman, Kendall);
+  the reproducibility record's snapshot sha256 equals the input
+  file's hash.
 
 ## Per-fold reporting and slices
 
@@ -802,3 +1094,20 @@ hand — all are read from the build output.
   uncertainty is reported alongside it; the 16.4% launch odds are a
   global cohort base rate, labeled with cohort, horizon, and supporting
   n on every row; every verdict carries a decision trace.
+- **v1.5 additions:** the pooled out-of-sample rank correlation is
+  weak (Spearman 0.2895; the 80% fold is negative at −0.2857) and is
+  reported as the headline ranking metric, not hidden behind the level
+  error; the regression parameters are weakly identified (intercept
+  95% CI [1.13, 6.40] on the 2000-refit cluster bootstrap) and the
+  prediction intervals that include parameter variation are reported
+  next to the outcome-only band; the param-aware farming simulation
+  folds coefficient, launch-odds and distribution-choice uncertainty
+  into the audit rows, but the launch-odds draw still comes from the
+  flat base-rate bootstrap — no per-protocol launch discrimination is
+  claimed; gate (d)'s 85% P(negative) ceiling is structurally
+  impossible under the conservative odds (floor 0.8636 > 0.85), so the
+  v1.4 board's 0 farms is a design outcome, and the v1.5 candidate
+  (f) corrects the ceiling to an odds-consistent form under a
+  prespecified two-layer adoption rule; verdicts flip often under
+  LOPO refits (543 moves) and ranks are shown as ranges where the
+  data does not support a single precise rank.
