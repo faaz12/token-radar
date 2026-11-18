@@ -1,4 +1,4 @@
-// Token Radar's model (radar-6): one sealed snapshot in, one ranked board out.
+// Token Radar's model (radar-7, evaluation charter v1.0): one sealed snapshot in, one ranked board out.
 //
 // The board covers every protocol the snapshot's watchlist names (the floor, never a ceiling)
 // and every other pre-token protocol the snapshot carries: the early rows the radar exists to
@@ -23,35 +23,45 @@
 //       log10(V) = b0 + b1*log10(tvl + $25M) + b2*log(1 + growth) + adjustments
 //       growth = clamp(change_7d, -50%, +200%) as a fraction; the growth coefficient is
 //       floored at zero — this snapshot's week was flat/down, so growth carries no positive
-//       signal and a negative carry would be noise, not information.
+//       signal and a negative carry would be noise, not information. The coefficient is
+//       unstable across folds (-0.07 on the full fit, +0.20…+1.00 in nested folds), so the
+//       clamp prevents paying protocols for shrinking; it does not create signal. The
+//       snapshot carries only change_7d — 30d/90d growth cannot be built from it.
 //       size floor: TVL below $25M is noisy in the snapshot, so the curve saturates there —
-//       a small protocol is never priced at zero for being small. The floor was picked by
-//       grid search over $10M/$25M/$50M/$100M/$250M on the walk-forward error.
+//       a small protocol is never priced at zero for being small. The floor is a locked
+//       constant, not a tuned optimum: no floor dominates the grid ($0M/$10M/$25M/$50M/
+//       $100M), and choosing it inside training folds scores worse pooled.
 //       Huber (IRLS, delta 1.345, MAD scale): the snapshot's own attribution quirks — a chain
 //       token counted on its bridge, one token counted on two versions of a protocol — are
-//       down-weighted instead of dragging the fit.
+//       down-weighted instead of dragging the fit. Huber and OLS are statistically
+//       indistinguishable on every split (paired per-observation differences, 95% CIs all
+//       straddle zero), so Huber stays the model on the robustness principle, not because
+//       it wins the metrics.
 //       group adjustments: the median residual of a category / a main chain, shrunk toward
 //       zero by n/(n+3), so a group with one or two comps moves the price a little and a
-//       group with fifteen moves it a lot.
+//       group with fifteen moves it a lot. A joint category intercept was tested and
+//       rejected: it improves nested/CV within noise but makes the walk-forward
+//       significantly worse.
 //  2. Launch odds: a seasoning curve, a logistic fit of "has a token" on log10(age+1) over
 //     all 645 dated protocols in the snapshot (not just the training comps). Older
 //     protocols are more likely to have launched; an unlisted age takes the base rate.
 //       implied_value_usd = value_if_launches x launch_odds
 //     Age left the regression: it now prices launch likelihood, not size.
 //
-// The fit is validated three ways at run time and the dashboard shows all three: the
-// walk-forward split (dated comparables only: the oldest 70% by listing date fit, the
-// newest 30% tested — a protocol with no listing date has no position in time, so it
-// cannot be walk-forwarded and is not placed in either side), a stratified walk-forward
-// split (dated and undated comps each split 70/30, so the undated part of the set is
-// scored too, and its error is reported separately), and a 5-fold cross-validation with
-// a fixed-seed shuffle. A 200-refit bootstrap (fixed seed) combined with the walk-forward
-// residual error gives the P25/P50/P75 band on every row; the dashboard reports how often
-// the band held on the live comparables out of sample.
-// Every farm plan carries a verdict — farm, marginal or skip — from its break-even launch
-// odds: the launch probability at which a standard $10,000 deposit (plus gas and opportunity
-// cost) breaks even against an assumed 0.25% share of the launch value. No protocol name is
-// ever special-cased: the same function scores every row.
+// The fit is validated at run time and the dashboard shows all of it, under evaluation
+// charter v1.0 (EVALUATION_CHARTER.md): the nested expanding-window walk-forward on dated
+// comparables only is the headline (train on the oldest 50/60/70/80/90%, test on the next
+// 10% forward in time, with a 30-day purge gap — train rows listed within 30 days before a
+// test window are dropped), plus the walk-forward 70/30 split, the stratified split (dated
+// and undated each 70/30, the undated error reported on its own), and a 5-fold
+// cross-validation with a fixed-seed shuffle. The value band is cross-conformal: the
+// (1-α) quantile of absolute out-of-fold residuals from the 5-fold CV, so a 50% band
+// holds ~50% of comparables by construction (51.1% measured), with 80% and 90% bands
+// reported alongside. The seasoning curve is validated with fold-local refits (Brier,
+// log-loss, ECE against the base-rate baseline). Every farm plan carries a verdict from
+// its expected net return: EV = launch odds × 0.25% × value-if-launches − plan cost;
+// farm when EV is positive, marginal when EV is negative but break-even odds are ≤33%,
+// skip otherwise. No protocol name is ever special-cased: the same function scores every row.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -90,6 +100,7 @@ export interface ModelConstants {
   farmer_share: number;
   farm_break_even: number;
   marginal_break_even: number;
+  purge_gap_days: number;
 }
 
 export const MODEL: ModelConstants = {
@@ -105,10 +116,14 @@ export const MODEL: ModelConstants = {
   farmer_share: 0.0025,
   farm_break_even: 0.1,
   marginal_break_even: 0.33,
+  purge_gap_days: 30,
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-6';
+export const MODEL_VERSION = 'radar-7';
+
+/** The evaluation charter version this model's validation follows. */
+export const CHARTER_VERSION = 'v1.0';
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -139,11 +154,91 @@ export interface Seasoning {
   base_rate: number;
 }
 
-/** The walk-forward validation, as the dashboard prints it. */
+/** One cross-conformal band: a nominal coverage, its half-width in dex, and the
+ * empirical coverage measured on the out-of-fold residuals, overall and by slice. */
+export interface ConformalBand {
+  nominal: number;
+  halfwidth_dex: number;
+  coverage: number;
+  coverage_dated: number;
+  coverage_undated: number;
+}
+
+/** The strict split-conformal check: train 70% / calibration 15% / test 15% on
+ * dated comps only. The calibration set is small (n=10), so this is a secondary
+ * check on the cross-conformal band, not the band itself. */
+export interface ConformalSplitCheck {
+  n_calibration: number;
+  n_test: number;
+  halfwidth_50_dex: number;
+  test_coverage_50: number;
+}
+
+/** One nested fold's seasoning validation: the curve refit on protocols listed
+ * before the cutoff, scored on the next 50 protocols listed after it. */
+export interface SeasoningFoldValidation {
+  train_pct: number;
+  cutoff: string;
+  n_fit: number;
+  brier: number;
+  log_loss: number;
+  ece: number;
+  base_rate_brier: number;
+  base_rate_log_loss: number;
+}
+
+/** The seasoning curve's out-of-sample validation, pooled across nested folds:
+ * fold-local refits against the base-rate baseline and the full fit. The verdict
+ * follows the calibration-check scale. */
+export interface SeasoningValidation {
+  brier: number;
+  log_loss: number;
+  ece: number;
+  base_rate_brier: number;
+  base_rate_log_loss: number;
+  full_fit_brier: number;
+  verdict: 'well-calibrated' | 'usable-with-caveats' | 'poorly-calibrated' | 'invalid-eval';
+}
+
+/** A paired Huber-vs-OLS comparison on identical observations: the median
+ * per-observation difference (Huber minus OLS) with a bootstrap 95% interval.
+ * A interval that straddles zero is noise, not a win for either side. */
+export interface PairedComparison {
+  median_diff: number;
+  ci_lo: number;
+  ci_hi: number;
+  n_better_huber: number;
+  n: number;
+}
+
+/** The missingness report: the three slices (dated-only / undated-only /
+ * combined) and the mechanism. Undated comps are legacy protocols whose listing
+ * dates were never recorded — structural missingness, not random — so they are
+ * scored separately and never mixed into the headline. */
+export interface MissingnessReport {
+  n_dated: number;
+  n_undated: number;
+  dated_err: number;
+  undated_err: number;
+  combined_err: number;
+  mechanism: string;
+  handling: string;
+}
+
+/** The truncation-invariance audit, run at build time: the fold construction
+ * and the feature computation must not use any row dated after a fold's cutoff. */
+export interface TruncationAudit {
+  passed: boolean;
+  checks: string[];
+}
+
+/** The walk-forward validation, as the dashboard prints it. Dated-only numbers
+ * are the headline; dated+undated and undated-only are separate diagnostics. */
 export interface Validation {
   r2: number;
   oos_median_abs_log_err: number;
   oos_stratified: number;
+  oos_stratified_dated: number;
   oos_undated: number;
   n_dated_comps: number;
   n_undated_comps: number;
@@ -156,6 +251,15 @@ export interface Validation {
   ols_baseline: OlsBaseline;
   nested_wf_folds: NestedFold[];
   nested_wf_pooled: number;
+  purge_gap_days: number;
+  charter_version: string;
+  conformal_bands: ConformalBand[];
+  conformal_split_check: ConformalSplitCheck;
+  seasoning_validation: SeasoningValidation;
+  seasoning_folds: SeasoningFoldValidation[];
+  huber_vs_ols: { wf: PairedComparison; nested: PairedComparison; cv: PairedComparison };
+  missingness: MissingnessReport;
+  truncation_audit: TruncationAudit;
 }
 
 /** The old OLS model, kept as a benchmark and never deleted: the same features, fitted by plain least squares, scored on the same splits. */
@@ -216,6 +320,7 @@ export interface BoardRow {
     value_if_launches_usd: number;
     launch_odds: number;
     break_even_odds: number;
+    expected_value_usd: number;
     band_p25_usd: number;
     band_p75_usd: number;
     category_adjustment: number;
@@ -250,6 +355,7 @@ export interface RadarRow {
   value_if_launches_usd: number;
   launch_odds: number;
   break_even_odds: number;
+  expected_value_usd: number;
   band_p25_usd: number;
   band_p75_usd: number;
   category_adjustment: number;
@@ -522,15 +628,17 @@ export function seededShuffle<T>(items: T[], seed: number): T[] {
 }
 
 /**
- * The seasoning curve: a logistic fit of "has a token" on log10(age+1), over every dated
- * protocol in the snapshot (not just the live comparables). Newton-Raphson on the
- * log-likelihood, from a fixed start, with a tiny ridge for stability — deterministic, no
- * libraries. Older protocols are more likely to have launched; the curve is the launch-odds
- * model the board multiplies the fitted value by.
+ * The seasoning curve, fitted on the given rows: a logistic fit of "has a token"
+ * on log10(age+1). Newton-Raphson on the log-likelihood, from a fixed start, with
+ * a tiny ridge for stability — deterministic, no libraries. Older protocols are
+ * more likely to have launched; the curve is the launch-odds model the board
+ * multiplies the fitted value by. A token counts as present when its market cap
+ * is recorded at all — a zero market cap is still a token (a dead one), not a
+ * missing one.
  */
-export function fitSeasoning(snapshot: Snapshot): Seasoning {
-  const dated = snapshot.protocols.filter((p) => ageDays(snapshot.as_of, p.listed_at) !== null);
-  const xs = dated.map((p) => Math.log10(ageDays(snapshot.as_of, p.listed_at)! + 1));
+export function fitSeasoningOn(rows: SnapshotProtocol[], asOf: string): Seasoning {
+  const dated = rows.filter((p) => ageDays(asOf, p.listed_at) !== null);
+  const xs = dated.map((p) => Math.log10(ageDays(asOf, p.listed_at)! + 1));
   const ys = dated.map((p) => (p.mcap_usd !== null ? 1 : 0));
   const baseRate = ys.length > 0 ? ys.reduce((a, b) => a + b, 0) / ys.length : 0;
   let b0 = 0;
@@ -561,6 +669,44 @@ export function fitSeasoning(snapshot: Snapshot): Seasoning {
     if (Math.max(Math.abs(s0), Math.abs(s1)) < 1e-10) break;
   }
   return { intercept: round4(b0), slope: round4(b1), n_protocols: dated.length, base_rate: round4(baseRate) };
+}
+
+/**
+ * The seasoning curve: a logistic fit of "has a token" on log10(age+1), over every dated
+ * protocol in the snapshot (not just the live comparables). The board uses this full
+ * fit; validation uses fold-local refits (see fitModel). The curve is a cross-sectional
+ * association at the snapshot date, not a historical hazard: token status is measured
+ * at as_of for every protocol, so a protocol listed before a cutoff that launched after
+ * it counts as has-token in the training fit.
+ */
+export function fitSeasoning(snapshot: Snapshot): Seasoning {
+  return fitSeasoningOn(snapshot.protocols, snapshot.as_of);
+}
+
+/** Brier score, log-loss and expected calibration error (10 fixed bins) of a
+ * launch-odds curve on the given rows. Every row is counted, dated or not: an
+ * undated protocol takes the curve's base rate. */
+export function seasoningMetrics(rows: SnapshotProtocol[], asOf: string, seasoning: Seasoning): { brier: number; log_loss: number; ece: number; n: number } {
+  const n = rows.length;
+  if (n === 0) return { brier: 0, log_loss: 0, ece: 0, n: 0 };
+  let brier = 0;
+  let logLoss = 0;
+  const bins: { count: number; predSum: number; actualSum: number }[] = Array.from({ length: 10 }, () => ({ count: 0, predSum: 0, actualSum: 0 }));
+  for (const p of rows) {
+    const pr = launchOdds(ageDays(asOf, p.listed_at), seasoning);
+    const y = p.mcap_usd !== null ? 1 : 0;
+    brier += (pr - y) ** 2;
+    logLoss += -(y * Math.log(Math.max(1e-12, pr)) + (1 - y) * Math.log(Math.max(1e-12, 1 - pr)));
+    const b = Math.min(9, Math.floor(pr * 10));
+    bins[b]!.count += 1;
+    bins[b]!.predSum += pr;
+    bins[b]!.actualSum += y;
+  }
+  let ece = 0;
+  for (const b of bins) {
+    if (b.count > 0) ece += (b.count / n) * Math.abs(b.actualSum / b.count - b.predSum / b.count);
+  }
+  return { brier: brier / n, log_loss: logLoss / n, ece, n };
 }
 
 /** A protocol's launch odds from the seasoning curve; an unlisted age takes the base rate. */
@@ -632,74 +778,143 @@ export interface FittedModel {
  * The growth coefficient is floored at zero in every fit: a negative carry in a flat week is
  * noise, and the model never pays a protocol for shrinking.
  */
+/**
+ * One regression fit on the given rows: the Huber fit, the growth coefficient floored
+ * at zero, and the shrunk category / chain adjustments. Exported so the leakage
+ * self-test can refit a fold's training set from a truncated snapshot and compare.
+ */
+export function fitRegression(
+  rows: SnapshotProtocol[],
+  asOf: string,
+  model: ModelConstants = MODEL,
+): { beta: number[]; adj: Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }>; chainAdj: Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }> } {
+  const raw = fitHuber(rows, asOf, model);
+  const beta = [...raw];
+  if (beta[2]! < 0) beta[2] = 0;
+  const adj = groupAdjustments(rows, asOf, beta, (p) => p.category ?? 'Other', model);
+  const chainAdj = groupAdjustments(rows, asOf, beta, mainChain, model);
+  return { beta, adj, chainAdj };
+}
+
+/**
+ * Statistical checks on the sealed snapshot, run before any fitting (charter v1.0):
+ * duplicate slugs, missing / zero / negative / extreme TVL, future-dated listings
+ * (listed after as_of), negative market caps (a market cap of exactly −1 is the
+ * snapshot's sentinel for a failed cap lookup — a warning, not an error), zero market
+ * caps (a dead token — a warning, not an error: it still counts as has-token), invalid
+ * FDV (none in this snapshot: the sealed input carries no FDV field, so nothing to check),
+ * an empty comparable set, watchlist slugs missing from the snapshot, and extreme
+ * 7-day changes. Errors abort the build; warnings are printed and recorded.
+ * Outlier sensitivity is covered by the Huber-vs-OLS paired comparison in the
+ * validation (a single protocol cannot move the verdict when both fitters agree
+ * within noise) and by the nested folds (each fold's error is reported separately).
+ */
+export function validateSnapshot(snapshot: Snapshot): { errors: string[]; warnings: string[] } {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const seen = new Set<string>();
+  for (const p of snapshot.protocols) {
+    if (seen.has(p.slug)) errors.push(`duplicate slug: ${p.slug}`);
+    seen.add(p.slug);
+    if (typeof p.tvl_usd !== 'number' || !Number.isFinite(p.tvl_usd)) errors.push(`${p.slug}: TVL is missing or not a number`);
+    else if (p.tvl_usd < 0) errors.push(`${p.slug}: negative TVL $${p.tvl_usd}`);
+    else if (p.tvl_usd === 0) warnings.push(`${p.slug}: zero TVL`);
+    else if (p.tvl_usd > 1e12) warnings.push(`${p.slug}: extreme TVL $${p.tvl_usd.toLocaleString()}`);
+    if (p.mcap_usd !== null) {
+      if (typeof p.mcap_usd !== 'number' || !Number.isFinite(p.mcap_usd)) errors.push(`${p.slug}: market cap is not a number`);
+      else if (p.mcap_usd === -1) warnings.push(`${p.slug}: market cap −1 (sentinel: the cap lookup failed — treated as has-token, excluded from comparables)`);
+      else if (p.mcap_usd < 0) errors.push(`${p.slug}: negative market cap $${p.mcap_usd}`);
+      else if (p.mcap_usd === 0) warnings.push(`${p.slug}: zero market cap (dead token — still counts as has-token)`);
+    }
+    if (p.listed_at !== null) {
+      const listed = Date.parse(`${p.listed_at}T00:00:00Z`);
+      const asOf = Date.parse(`${snapshot.as_of}T00:00:00Z`);
+      if (!Number.isFinite(listed)) errors.push(`${p.slug}: unparseable listing date ${p.listed_at}`);
+      else if (Number.isFinite(asOf) && listed > asOf) errors.push(`${p.slug}: listed ${p.listed_at}, after the snapshot date ${snapshot.as_of}`);
+    }
+    if (p.change_7d !== null && (typeof p.change_7d !== 'number' || !Number.isFinite(p.change_7d))) errors.push(`${p.slug}: 7-day change is not a number`);
+    else if (p.change_7d !== null && Math.abs(p.change_7d) > 1000) warnings.push(`${p.slug}: extreme 7-day change ${p.change_7d}%`);
+  }
+  const comps = liveComps(snapshot);
+  if (comps.length === 0) errors.push('no live-token comparables: nothing to fit the curve on');
+  const index = new Set(snapshot.protocols.map((p) => p.slug));
+  const missingWatchlist = snapshot.watchlist.filter((s) => !index.has(s));
+  if (missingWatchlist.length > 0) warnings.push(`watchlist slugs missing from the snapshot: ${missingWatchlist.join(', ')}`);
+  return { errors, warnings };
+}
+
 export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): FittedModel {
   const comps = liveComps(snapshot);
   const asOf = snapshot.as_of;
-  const fitOne = (rows: SnapshotProtocol[]): { beta: number[]; adj: Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }>; chainAdj: Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }> } => {
-    const raw = fitHuber(rows, asOf, model);
-    const beta = [...raw];
-    if (beta[2]! < 0) beta[2] = 0;
-    const adj = groupAdjustments(rows, asOf, beta, (p) => p.category ?? 'Other', model);
-    const chainAdj = groupAdjustments(rows, asOf, beta, mainChain, model);
-    return { beta, adj, chainAdj };
-  };
+  const fitOne = (rows: SnapshotProtocol[]): { beta: number[]; adj: Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }>; chainAdj: Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }> } => fitRegression(rows, asOf, model);
+  const absErrs = (
+    rows: SnapshotProtocol[],
+    beta: number[],
+    adj: Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }>,
+    chainAdj: Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }>,
+  ): number[] =>
+    rows.map((p) => Math.abs(Math.log10(p.mcap_usd!) - predictLog(p, asOf, beta, adj, chainAdj, model)));
   const medianAbsErr = (
     rows: SnapshotProtocol[],
     beta: number[],
     adj: Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }>,
     chainAdj: Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }>,
-  ): number => {
-    const errs = rows
-      .map((p) => Math.abs(Math.log10(p.mcap_usd!) - predictLog(p, asOf, beta, adj, chainAdj, model)))
-      .sort((a, b) => a - b);
-    return median(errs) ?? 0;
-  };
+  ): number => median([...absErrs(rows, beta, adj, chainAdj)].sort((a, b) => a - b)) ?? 0;
+
+  // The purge gap (charter v1.0): a training row listed less than purge_gap_days
+  // before a test window starts is dropped. A token's first month of trading is
+  // when its snapshot market cap is most unstable, and the snapshot's growth
+  // window is 7 days, so 30 days covers about four weekly windows.
+  const purge = (trainRows: SnapshotProtocol[], testStart: string): SnapshotProtocol[] =>
+    trainRows.filter((p) => (ageDays(testStart, p.listed_at) ?? 0) >= model.purge_gap_days);
 
   const full = fitOne(comps);
   const r2 = rSquared(comps, asOf, full.beta, full.adj, full.chainAdj, model);
 
-  // Walk-forward, dated comparables only: sort by listing date, fit on the oldest 70%,
+  // Dated comparables, oldest first; undated comparables, by slug.
+  const datedOrdered = [...comps]
+    .filter((p) => p.listed_at !== null)
+    .sort((a, b) => (a.listed_at! < b.listed_at! ? -1 : a.listed_at! > b.listed_at! ? 1 : a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+  const dated = datedOrdered;
+  const undated = [...comps].filter((p) => p.listed_at === null).sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+
+  // Walk-forward, dated comparables only, with the purge gap: fit on the oldest 70%,
   // test on the newest 30%. A comparable with no listing date has no position in time:
   // radar-5 sorted it last, so all 32 undated comps landed whole in the test set and the
   // "walk-forward" error was really the undated error. Undated comps are still scored —
   // in the stratified split below and in cross-validation — and their stratified-test
   // error is reported separately as oos_undated, not hidden inside the walk-forward.
-  const datedOrdered = [...comps]
-    .filter((p) => p.listed_at !== null)
-    .sort((a, b) => (a.listed_at! < b.listed_at! ? -1 : a.listed_at! > b.listed_at! ? 1 : a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
   const nTrain = Math.floor(datedOrdered.length * 0.7);
-  const train = datedOrdered.slice(0, nTrain);
   const test = datedOrdered.slice(nTrain);
+  const wfTestStart = test[0]!.listed_at!;
+  const train = purge(datedOrdered.slice(0, nTrain), wfTestStart);
   const wf = fitOne(train);
   const oos = medianAbsErr(test, wf.beta, wf.adj, wf.chainAdj);
+  const wfHuberErrs = absErrs(test, wf.beta, wf.adj, wf.chainAdj);
 
-  const dated = datedOrdered;
-  const undated = [...comps].filter((p) => p.listed_at === null).sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+  // Stratified split: dated and undated comps each split 70/30, so the undated part
+  // of the set is scored too, with its error reported separately. This split is
+  // random, not time-based, so no purge gap applies.
   const stratTrain = [...dated.slice(0, Math.floor(dated.length * 0.7)), ...undated.slice(0, Math.floor(undated.length * 0.7))];
   const stratTest = [...dated.slice(Math.floor(dated.length * 0.7)), ...undated.slice(Math.floor(undated.length * 0.7))];
   const strat = fitOne(stratTrain);
   const oosStratified = medianAbsErr(stratTest, strat.beta, strat.adj, strat.chainAdj);
-  const stratUndatedTest = stratTest.filter((p) => p.listed_at === null);
-  const oosUndated = medianAbsErr(stratUndatedTest, strat.beta, strat.adj, strat.chainAdj);
-
-  const shuffled = seededShuffle(comps, 20261118);
-  const folds: SnapshotProtocol[][] = [[], [], [], [], []];
-  shuffled.forEach((p, i) => folds[i % 5]!.push(p));
-  const cvPred = new Map<string, number>();
-  for (let f = 0; f < 5; f++) {
-    const testFold = folds[f]!;
-    const trainFolds = folds.flatMap((fold, i) => (i === f ? [] : fold));
-    const cvFit = fitOne(trainFolds);
-    for (const p of testFold) cvPred.set(p.slug, predictLog(p, asOf, cvFit.beta, cvFit.adj, cvFit.chainAdj, model));
-  }
-  const cvErrs = comps
-    .map((p) => Math.abs(Math.log10(p.mcap_usd!) - cvPred.get(p.slug)!))
-    .sort((a, b) => a - b);
-  const cv = median(cvErrs) ?? 0;
+  const oosStratifiedDated = medianAbsErr(
+    stratTest.filter((p) => p.listed_at !== null),
+    strat.beta,
+    strat.adj,
+    strat.chainAdj,
+  );
+  const oosUndated = medianAbsErr(
+    stratTest.filter((p) => p.listed_at === null),
+    strat.beta,
+    strat.adj,
+    strat.chainAdj,
+  );
 
   // The old OLS model, kept as a benchmark and never deleted: the same features, fitted by
-  // plain least squares (one solve, no Huber weights), scored on the same 70/30 split and
-  // the same five folds, so the comparison isolates the fitting method.
+  // plain least squares (one solve, no Huber weights), scored on the same splits and the
+  // same five folds, so the comparison isolates the fitting method.
   const fitOneOls = (rows: SnapshotProtocol[]): { beta: number[]; adj: Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }>; chainAdj: Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }> } => {
     const raw = fitWeightedOls(rows, rows.map(() => 1), asOf, model);
     const beta = [...raw];
@@ -708,47 +923,58 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
     const chainAdj = groupAdjustments(rows, asOf, beta, mainChain, model);
     return { beta, adj, chainAdj };
   };
-  const olsFull = fitOneOls(comps);
-  const olsR2 = rSquared(comps, asOf, olsFull.beta, olsFull.adj, olsFull.chainAdj, model);
-  const olsWf = fitOneOls(train);
-  const olsOos = medianAbsErr(test, olsWf.beta, olsWf.adj, olsWf.chainAdj);
+
+  // 5-fold cross-validation with a fixed-seed shuffle: Huber and OLS on the same folds.
+  const shuffled = seededShuffle(comps, 20261118);
+  const folds: SnapshotProtocol[][] = [[], [], [], [], []];
+  shuffled.forEach((p, i) => folds[i % 5]!.push(p));
+  const cvPred = new Map<string, number>();
   const cvPredOls = new Map<string, number>();
   for (let f = 0; f < 5; f++) {
     const testFold = folds[f]!;
     const trainFolds = folds.flatMap((fold, i) => (i === f ? [] : fold));
+    const cvFit = fitOne(trainFolds);
+    for (const p of testFold) cvPred.set(p.slug, predictLog(p, asOf, cvFit.beta, cvFit.adj, cvFit.chainAdj, model));
     const cvFitOls = fitOneOls(trainFolds);
     for (const p of testFold) cvPredOls.set(p.slug, predictLog(p, asOf, cvFitOls.beta, cvFitOls.adj, cvFitOls.chainAdj, model));
   }
-  const cvErrsOls = comps
-    .map((p) => Math.abs(Math.log10(p.mcap_usd!) - cvPredOls.get(p.slug)!))
-    .sort((a, b) => a - b);
-  const olsCv = median(cvErrsOls) ?? 0;
+  const cvPairs = comps.map((p) => ({
+    huber: Math.abs(Math.log10(p.mcap_usd!) - cvPred.get(p.slug)!),
+    ols: Math.abs(Math.log10(p.mcap_usd!) - cvPredOls.get(p.slug)!),
+    dated: p.listed_at !== null,
+  }));
+  const cv = median(cvPairs.map((x) => x.huber).sort((a, b) => a - b)) ?? 0;
+  const olsCv = median(cvPairs.map((x) => x.ols).sort((a, b) => a - b)) ?? 0;
 
-  // Nested expanding-window walk-forward on the dated comparables only: train on the
-  // oldest 50/60/70/80/90%, test on the next 10% forward in time. Every fold's test set
-  // is strictly later than its training set, so no fold ever peeks ahead.
-  const datedComps = [...comps]
-    .filter((p) => p.listed_at !== null)
-    .sort((a, b) => (a.listed_at! < b.listed_at! ? -1 : a.listed_at! > b.listed_at! ? 1 : a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
-  const nestedStep = Math.max(1, Math.round(datedComps.length * 0.1));
+  const olsFull = fitOneOls(comps);
+  const olsR2 = rSquared(comps, asOf, olsFull.beta, olsFull.adj, olsFull.chainAdj, model);
+  const olsWf = fitOneOls(train);
+  const olsOos = medianAbsErr(test, olsWf.beta, olsWf.adj, olsWf.chainAdj);
+  const wfOlsErrs = absErrs(test, olsWf.beta, olsWf.adj, olsWf.chainAdj);
+
+  // Nested expanding-window walk-forward on the dated comparables only, with the purge
+  // gap: train on the oldest 50/60/70/80/90%, test on the next 10% forward in time.
+  // Every fold's test set is strictly later than its training set, so no fold ever
+  // peeks ahead.
+  const nestedStep = Math.max(1, Math.round(dated.length * 0.1));
   const nestedFolds: NestedFold[] = [];
-  const nestedPooledErrs: number[] = [];
-  const nestedPooledErrsOls: number[] = [];
+  const nestedPairs: { huber: number; ols: number }[] = [];
+  const nestedFoldFits: { label: string; train: SnapshotProtocol[]; testStart: string; fit: ReturnType<typeof fitOne> }[] = [];
   for (const pct of [50, 60, 70, 80, 90]) {
-    const nTr = Math.floor((datedComps.length * pct) / 100);
-    const foldTest = datedComps.slice(nTr, nTr + nestedStep);
-    const foldTrain = datedComps.slice(0, nTr);
+    const nTr = Math.floor((dated.length * pct) / 100);
+    const foldTest = dated.slice(nTr, nTr + nestedStep);
+    const foldTestStart = foldTest[0]!.listed_at!;
+    const foldTrain = purge(dated.slice(0, nTr), foldTestStart);
     const foldFit = fitOne(foldTrain);
-    const errs = foldTest.map((p) => Math.abs(Math.log10(p.mcap_usd!) - predictLog(p, asOf, foldFit.beta, foldFit.adj, foldFit.chainAdj, model)));
-    nestedPooledErrs.push(...errs);
-    nestedFolds.push({ train_pct: pct, median_abs_log_err: round4(median([...errs].sort((a, b) => a - b)) ?? 0), n_test: foldTest.length });
     const foldFitOls = fitOneOls(foldTrain);
-    nestedPooledErrsOls.push(...foldTest.map((p) => Math.abs(Math.log10(p.mcap_usd!) - predictLog(p, asOf, foldFitOls.beta, foldFitOls.adj, foldFitOls.chainAdj, model))));
+    const huberErrs = absErrs(foldTest, foldFit.beta, foldFit.adj, foldFit.chainAdj);
+    const olsErrs = absErrs(foldTest, foldFitOls.beta, foldFitOls.adj, foldFitOls.chainAdj);
+    huberErrs.forEach((h, i) => nestedPairs.push({ huber: h, ols: olsErrs[i]! }));
+    nestedFolds.push({ train_pct: pct, median_abs_log_err: round4(median([...huberErrs].sort((a, b) => a - b)) ?? 0), n_test: foldTest.length });
+    nestedFoldFits.push({ label: `nested ${pct}%`, train: foldTrain, testStart: foldTestStart, fit: foldFit });
   }
-  nestedPooledErrs.sort((a, b) => a - b);
-  const nestedPooled = round4(median(nestedPooledErrs) ?? 0);
-  nestedPooledErrsOls.sort((a, b) => a - b);
-  const nestedPooledOls = round4(median(nestedPooledErrsOls) ?? 0);
+  const nestedPooled = round4(median(nestedPairs.map((x) => x.huber).sort((a, b) => a - b)) ?? 0);
+  const nestedPooledOls = round4(median(nestedPairs.map((x) => x.ols).sort((a, b) => a - b)) ?? 0);
   const olsBaseline: OlsBaseline = {
     r2: round4(olsR2),
     oos_median_abs_log_err: round4(olsOos),
@@ -756,6 +982,210 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
     nested_wf_pooled: nestedPooledOls,
   };
 
+  // The seasoning curve, validated with fold-local refits: at each nested cutoff the
+  // curve is fitted only on protocols listed before the cutoff and scored on the next
+  // 50 protocols listed after it. The full fit is used for the board only, never for
+  // a validation metric — a full-fit metric would peek at the test protocols' own
+  // token status. The curve is a cross-sectional association at the snapshot date,
+  // not a historical hazard: token status is measured at as_of for every protocol.
+  const seasoningFolds: SeasoningFoldValidation[] = [];
+  let poolBrier = 0;
+  let poolLogLoss = 0;
+  let poolEce = 0;
+  let poolBaseBrier = 0;
+  let poolBaseLogLoss = 0;
+  let poolN = 0;
+  for (const pct of [50, 60, 70, 80, 90]) {
+    const nTr = Math.floor((dated.length * pct) / 100);
+    const cutoff = dated[nTr]!.listed_at!;
+    const fitRows = snapshot.protocols.filter((p) => p.listed_at !== null && p.listed_at < cutoff);
+    const testRows = snapshot.protocols
+      .filter((p) => p.listed_at !== null && p.listed_at >= cutoff)
+      .sort((a, b) => (a.listed_at! < b.listed_at! ? -1 : a.listed_at! > b.listed_at! ? 1 : a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0))
+      .slice(0, 50);
+    const local = fitSeasoningOn(fitRows, asOf);
+    const m = seasoningMetrics(testRows, asOf, local);
+    const baseIntercept = local.base_rate > 0 && local.base_rate < 1 ? Math.log(local.base_rate / (1 - local.base_rate)) : 0;
+    const base = seasoningMetrics(testRows, asOf, { intercept: round4(baseIntercept), slope: 0, n_protocols: fitRows.length, base_rate: local.base_rate });
+    seasoningFolds.push({ train_pct: pct, cutoff, n_fit: fitRows.length, brier: round4(m.brier), log_loss: round4(m.log_loss), ece: round4(m.ece), base_rate_brier: round4(base.brier), base_rate_log_loss: round4(base.log_loss) });
+    poolBrier += m.brier * m.n;
+    poolLogLoss += m.log_loss * m.n;
+    poolEce += m.ece * m.n;
+    poolBaseBrier += base.brier * base.n;
+    poolBaseLogLoss += base.log_loss * base.n;
+    poolN += m.n;
+  }
+  const pooledBrier = poolN > 0 ? poolBrier / poolN : 0;
+  const pooledLogLoss = poolN > 0 ? poolLogLoss / poolN : 0;
+  const pooledEce = poolN > 0 ? poolEce / poolN : 0;
+  const pooledBaseBrier = poolN > 0 ? poolBaseBrier / poolN : 0;
+  const pooledBaseLogLoss = poolN > 0 ? poolBaseLogLoss / poolN : 0;
+  const seasoning = fitSeasoning(snapshot);
+  const fullFitMetrics = seasoningMetrics(
+    snapshot.protocols.filter((p) => p.listed_at !== null),
+    asOf,
+    seasoning,
+  );
+  const seasoningVerdict: SeasoningValidation['verdict'] =
+    poolN < 10
+      ? 'invalid-eval'
+      : pooledEce <= 0.05 && pooledLogLoss <= 0.5 * pooledBaseLogLoss && pooledBrier <= 0.8 * pooledBaseBrier
+        ? 'well-calibrated'
+        : pooledEce <= 0.1 && pooledLogLoss < pooledBaseLogLoss
+          ? 'usable-with-caveats'
+          : 'poorly-calibrated';
+  const seasoningValidation: SeasoningValidation = {
+    brier: round4(pooledBrier),
+    log_loss: round4(pooledLogLoss),
+    ece: round4(pooledEce),
+    base_rate_brier: round4(pooledBaseBrier),
+    base_rate_log_loss: round4(pooledBaseLogLoss),
+    full_fit_brier: round4(fullFitMetrics.brier),
+    verdict: seasoningVerdict,
+  };
+
+  // The value band is cross-conformal, not bootstrap-only: the (1−α) quantile of the
+  // absolute out-of-fold residuals from the 5-fold cross-validation, with the
+  // finite-sample correction k = ceil((n+1)(1−α)). A 50% band holds ~50% of the
+  // comparables by construction; the 80% and 90% bands are reported alongside.
+  const cvResiduals = cvPairs.map((x) => ({ err: x.huber, dated: x.dated })).sort((a, b) => a.err - b.err);
+  const conformalHalfwidth = (alpha: number): number => {
+    // alpha is the nominal COVERAGE (0.5/0.8/0.9): the band is the alpha quantile
+    // of the absolute out-of-fold residuals, with the finite-sample correction
+    // k = ceil((n+1)*alpha). A higher nominal coverage gives a wider band.
+    const n = cvResiduals.length;
+    const k = Math.min(n, Math.max(1, Math.ceil((n + 1) * alpha)));
+    return cvResiduals[k - 1]!.err;
+  };
+  const conformalCoverage = (halfwidth: number): { all: number; dated: number; undated: number } => {
+    const cov = (rows: { err: number }[]): number => (rows.length > 0 ? rows.filter((r) => r.err <= halfwidth).length / rows.length : 0);
+    return { all: cov(cvResiduals), dated: cov(cvResiduals.filter((r) => r.dated)), undated: cov(cvResiduals.filter((r) => !r.dated)) };
+  };
+  const conformalBands: ConformalBand[] = [0.5, 0.8, 0.9].map((alpha) => {
+    const hw = conformalHalfwidth(alpha);
+    const c = conformalCoverage(hw);
+    return { nominal: alpha, halfwidth_dex: round4(hw), coverage: round4(c.all), coverage_dated: round4(c.dated), coverage_undated: round4(c.undated) };
+  });
+  const bandHalfwidth = conformalBands[0]!.halfwidth_dex;
+  const rangeHolds = conformalBands[0]!.coverage;
+
+  // Strict split-conformal check: dated comparables, time-ordered, train 70% /
+  // calibration 15% / test 15%. The calibration set is small (n=10), so this is a
+  // secondary check on the cross-conformal band, not the band itself.
+  const splitTrainRaw = dated.slice(0, Math.floor(dated.length * 0.7));
+  const splitCal = dated.slice(Math.floor(dated.length * 0.7), Math.floor(dated.length * 0.85));
+  const splitTest = dated.slice(Math.floor(dated.length * 0.85));
+  const splitTrain = purge(splitTrainRaw, splitCal[0]!.listed_at!);
+  const splitFit = fitOne(splitTrain);
+  const calErrs = absErrs(splitCal, splitFit.beta, splitFit.adj, splitFit.chainAdj).sort((a, b) => a - b);
+  const splitK = Math.min(calErrs.length, Math.max(1, Math.ceil((calErrs.length + 1) * 0.5)));
+  const splitHalfwidth = calErrs[splitK - 1] ?? 0;
+  const splitTestErrs = absErrs(splitTest, splitFit.beta, splitFit.adj, splitFit.chainAdj);
+  const splitCoverage = splitTestErrs.length > 0 ? splitTestErrs.filter((e) => e <= splitHalfwidth).length / splitTestErrs.length : 0;
+  const conformalSplitCheck: ConformalSplitCheck = {
+    n_calibration: splitCal.length,
+    n_test: splitTest.length,
+    halfwidth_50_dex: round4(splitHalfwidth),
+    test_coverage_50: round4(splitCoverage),
+  };
+
+  // Paired Huber-vs-OLS comparisons on identical observations: the median
+  // per-observation difference (Huber minus OLS) with a bootstrap 95% interval
+  // (2000 resamples, fixed seed). An interval that straddles zero is noise, not a
+  // win for either side — the dashboard must not claim Huber wins when it does not.
+  const pairedComparison = (huberErrs: number[], olsErrs: number[]): PairedComparison => {
+    const diffs = huberErrs.map((h, i) => h - olsErrs[i]!);
+    const med = median([...diffs].sort((a, b) => a - b)) ?? 0;
+    const rand = mulberry32(20261107);
+    const bootMeds: number[] = [];
+    for (let b = 0; b < 2000; b++) {
+      const sample: number[] = [];
+      for (let i = 0; i < diffs.length; i++) sample.push(diffs[Math.floor(rand() * diffs.length)]!);
+      bootMeds.push(median(sample.sort((a, b) => a - b)) ?? 0);
+    }
+    bootMeds.sort((a, b) => a - b);
+    const lo = bootMeds[Math.floor(0.025 * bootMeds.length)] ?? 0;
+    const hi = bootMeds[Math.min(bootMeds.length - 1, Math.ceil(0.975 * bootMeds.length) - 1)] ?? 0;
+    return { median_diff: round4(med), ci_lo: round4(lo), ci_hi: round4(hi), n_better_huber: diffs.filter((d) => d < 0).length, n: diffs.length };
+  };
+  const huberVsOls = {
+    wf: pairedComparison(wfHuberErrs, wfOlsErrs),
+    nested: pairedComparison(
+      nestedPairs.map((x) => x.huber),
+      nestedPairs.map((x) => x.ols),
+    ),
+    cv: pairedComparison(
+      cvPairs.map((x) => x.huber),
+      cvPairs.map((x) => x.ols),
+    ),
+  };
+
+  // The missingness report: undated comparables are legacy protocols whose listing
+  // dates were never recorded — structural missingness, not random — so they are
+  // scored separately and never mixed into the headline.
+  const missingness: MissingnessReport = {
+    n_dated: dated.length,
+    n_undated: undated.length,
+    dated_err: round4(oosStratifiedDated),
+    undated_err: round4(oosUndated),
+    combined_err: round4(oosStratified),
+    mechanism:
+      'Structural (MNAR): undated comparables are legacy protocols whose listing dates were never recorded. They are systematically smaller (median market cap $4.8M vs $9.0M dated) and over-predicted (median residual −0.228 vs −0.021 dated), so the missingness itself carries signal about size.',
+    handling:
+      'Status quo (a): undated comparables are excluded from time-based splits (walk-forward, nested) and scored separately in the stratified split. Imputation (listing date = 365 days + missingness indicator) and indicator-only were tested on nested walk-forward and did not improve the dated holdout (nested 0.4307 and 0.3857 vs 0.3857 status quo).',
+  };
+
+  // The truncation-invariance audit, run at build time: for every time-based fold,
+  // (a) every training row is listed at least purge_gap_days before the test window,
+  // and (b) refitting on the snapshot truncated at the purge cutoff reproduces the
+  // fold fit exactly — beta and every group adjustment. Any feature or adjustment
+  // that peeked at rows past the cutoff (a global median, a floor fitted on the full
+  // set, a test row smuggled into training) would fail check (b).
+  const truncationChecks: string[] = [];
+  let truncationPassed = true;
+  const auditFold = (label: string, foldTrain: SnapshotProtocol[], testStart: string, foldFit: ReturnType<typeof fitOne>): void => {
+    const bad = foldTrain.filter((p) => (ageDays(testStart, p.listed_at) ?? 0) < model.purge_gap_days);
+    if (bad.length > 0) {
+      truncationPassed = false;
+      truncationChecks.push(`${label}: FAIL — ${bad.length} training rows inside the ${model.purge_gap_days}d purge gap`);
+      return;
+    }
+    const cutoffDate = new Date(Date.parse(`${testStart}T00:00:00Z`) - model.purge_gap_days * DAY_MS).toISOString().slice(0, 10);
+    const truncated: Snapshot = { ...snapshot, protocols: snapshot.protocols.filter((p) => p.listed_at !== null && p.listed_at <= cutoffDate) };
+    const truncatedComps = liveComps(truncated);
+    const trainSlugs = new Set(foldTrain.map((p) => p.slug));
+    const truncatedSlugs = new Set(truncatedComps.map((p) => p.slug));
+    const sameSet = trainSlugs.size === truncatedSlugs.size && [...trainSlugs].every((s) => truncatedSlugs.has(s));
+    if (!sameSet) {
+      truncationPassed = false;
+      truncationChecks.push(`${label}: FAIL — truncated snapshot holds ${truncatedComps.length} comps, fold train holds ${foldTrain.length}`);
+      return;
+    }
+    const refit = fitOne(truncatedComps);
+    const betaSame = refit.beta.every((b, i) => Math.abs(b - foldFit.beta[i]!) < 1e-9);
+    const adjSame = (a: Map<string, { adjustment: number; count: number }>, b: Map<string, { adjustment: number; count: number }>): boolean => {
+      if (a.size !== b.size) return false;
+      for (const [k, v] of a) {
+        const w = b.get(k);
+        if (!w || Math.abs(v.adjustment - w.adjustment) > 1e-9 || v.count !== w.count) return false;
+      }
+      return true;
+    };
+    if (!betaSame || !adjSame(refit.adj, foldFit.adj) || !adjSame(refit.chainAdj, foldFit.chainAdj)) {
+      truncationPassed = false;
+      truncationChecks.push(`${label}: FAIL — truncated refit differs from the fold fit`);
+      return;
+    }
+    const latest = foldTrain.length > 0 ? foldTrain[foldTrain.length - 1]!.listed_at : 'n/a';
+    truncationChecks.push(
+      `${label}: PASS — ${foldTrain.length} train rows, latest listed ${latest} (≥${model.purge_gap_days}d before ${testStart}); truncated refit identical (beta + ${refit.adj.size} category + ${refit.chainAdj.size} chain adjustments)`,
+    );
+  };
+  auditFold('walk-forward 70/30', train, wfTestStart, wf);
+  for (const f of nestedFoldFits) auditFold(f.label, f.train, f.testStart, f.fit);
+
+  // A 200-refit bootstrap (fixed seed), kept as a diagnostic on the band: the
+  // cross-conformal band above is the band the board prints.
   const bootRand = mulberry32(20261119);
   const bootPreds: number[][] = comps.map(() => []);
   for (let b = 0; b < 200; b++) {
@@ -771,15 +1201,6 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
     })
     .sort((a, b) => a - b);
   const bootstrapSd = median(sds) ?? 0;
-  // The band's error term is the stratified out-of-sample error, not the dated-only
-  // walk-forward error: the band is printed on every board row, dated and undated alike,
-  // so its miss must be measured on the whole comparable population. (Radar-5 used the
-  // walk-forward error; with the walk-forward now dated-only that would understate the
-  // miss for undated rows and the band held only ~39% of comps in cross-validation.)
-  const bandHalfwidth = 0.6745 * Math.sqrt(bootstrapSd ** 2 + oosStratified ** 2);
-  const held = comps.filter((p) => Math.abs(Math.log10(p.mcap_usd!) - cvPred.get(p.slug)!) <= bandHalfwidth).length;
-  const rangeHolds = comps.length > 0 ? held / comps.length : 0;
-  const seasoning = fitSeasoning(snapshot);
 
   const growths = comps.map((p) => features(p, asOf, model)[2]!).sort((a, b) => a - b);
   const fit: Fit = {
@@ -794,6 +1215,7 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
     r2: round4(r2),
     oos_median_abs_log_err: round4(oos),
     oos_stratified: round4(oosStratified),
+    oos_stratified_dated: round4(oosStratifiedDated),
     oos_undated: round4(oosUndated),
     n_dated_comps: dated.length,
     n_undated_comps: undated.length,
@@ -806,6 +1228,15 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
     ols_baseline: olsBaseline,
     nested_wf_folds: nestedFolds,
     nested_wf_pooled: nestedPooled,
+    purge_gap_days: model.purge_gap_days,
+    charter_version: CHARTER_VERSION,
+    conformal_bands: conformalBands,
+    conformal_split_check: conformalSplitCheck,
+    seasoning_validation: seasoningValidation,
+    seasoning_folds: seasoningFolds,
+    huber_vs_ols: huberVsOls,
+    missingness,
+    truncation_audit: { passed: truncationPassed, checks: truncationChecks },
   };
   const toComparable = (m: Map<string, { adjustment: number; count: number; basis: 'category' | 'global' }>): Comparable[] =>
     [...m.entries()]
@@ -980,14 +1411,27 @@ export function breakEvenOdds(valueIfLaunches: number, cost: number, model: Mode
 }
 
 /**
- * The farm verdict, from the break-even launch odds: farm when a launch need only be a
- * one-in-ten shot to break even, marginal when it need be one-in-three, skip otherwise.
- * The odds are the plan's, not the protocol's: a protocol's own launch odds decide the
- * ranking, the break-even odds decide whether farming it is worth the money.
+ * The expected net return of farming a protocol for a standard deposit: the launch
+ * odds times the farmer's share (0.25%) of the value if it launches, minus the
+ * plan cost (gas + opportunity cost of the deposit). Positive means the farm pays
+ * for itself in expectation.
  */
-export function verdictFor(valueIfLaunches: number, cost: number, model: ModelConstants = MODEL): Verdict {
+export function expectedValue(launchOdds: number, valueIfLaunches: number, cost: number, model: ModelConstants = MODEL): number {
+  return launchOdds * model.farmer_share * valueIfLaunches - cost;
+}
+
+/**
+ * The farm verdict, from the expected net return, not from the valuation alone:
+ * farm when the expected return is positive, marginal when it is negative but the
+ * break-even odds are low enough that a slightly better launch chance would flip
+ * it, skip otherwise. The odds are the plan's and the protocol's together: a
+ * protocol's own launch odds (p_L) decide the expected return, the break-even
+ * odds (p_BE) decide how far away a positive return is.
+ */
+export function verdictFor(launchOdds: number, valueIfLaunches: number, cost: number, model: ModelConstants = MODEL): Verdict {
+  const ev = expectedValue(launchOdds, valueIfLaunches, cost, model);
+  if (ev > 0) return 'farm';
   const be = breakEvenOdds(valueIfLaunches, cost, model);
-  if (be <= model.farm_break_even) return 'farm';
   if (be <= model.marginal_break_even) return 'marginal';
   return 'skip';
 }
@@ -1038,13 +1482,15 @@ export function fmtOdds(odds: number): string {
 
 /** The verdict's one line, first in every farm plan: the call and the arithmetic behind it. */
 export function verdictStep(verdict: Verdict, valueIfLaunches: number, launchOdds: number, beOdds: number, cost: number): string {
+  const ev = expectedValue(launchOdds, valueIfLaunches, cost);
+  const evText = ev >= 0 ? `+$${Math.round(ev).toLocaleString()}` : `−$${Math.round(-ev).toLocaleString()}`;
   if (verdict === 'farm') {
-    return `Verdict: FARM — break-even launch odds ${fmtOdds(beOdds)}: farming breaks even if this protocol launches with at least that probability, against a value if it launches of ${fmtShort(valueIfLaunches)} and a plan cost of about $${cost}. Its own launch odds are ${fmtOdds(launchOdds)}, so farm this protocol first.`;
+    return `Verdict: FARM — expected net return ${evText}: a ${fmtOdds(launchOdds)} launch chance (p_L) beats the ${fmtOdds(beOdds)} break-even (p_BE), against a value if it launches of ${fmtShort(valueIfLaunches)} and a plan cost of about $${cost}. Farm this protocol first.`;
   }
   if (verdict === 'marginal') {
-    return `Verdict: MARGINAL — break-even launch odds ${fmtOdds(beOdds)}: farming breaks even if this protocol launches with at least that probability, against a value if it launches of ${fmtShort(valueIfLaunches)} and a plan cost of about $${cost}. Its own launch odds are ${fmtOdds(launchOdds)}: worth a small position, not a priority.`;
+    return `Verdict: MARGINAL — expected net return ${evText}: needs ${fmtOdds(beOdds)} to break even against a ${fmtOdds(launchOdds)} launch chance, against a value if it launches of ${fmtShort(valueIfLaunches)} and a plan cost of about $${cost}. Worth a small position, not a priority.`;
   }
-  return `Verdict: SKIP — break-even launch odds ${fmtOdds(beOdds)} are too high: farming breaks even only if this protocol launches with at least that probability, against a value if it launches of ${fmtShort(valueIfLaunches)} and a plan cost of about $${cost}. Its own launch odds are ${fmtOdds(launchOdds)}, so skip it unless its points program changes.`;
+  return `Verdict: SKIP — expected net return ${evText}: break-even launch odds ${fmtOdds(beOdds)} are too far from a ${fmtOdds(launchOdds)} launch chance, against a value if it launches of ${fmtShort(valueIfLaunches)} and a plan cost of about $${cost}. Skip it unless its points program changes.`;
 }
 
 /**
@@ -1126,7 +1572,7 @@ export function buildBoard(snapshot: Snapshot, fitted: FittedModel, model: Model
   const scored = [...chosen.values()].map((p) => {
     const v = impliedValue(p, snapshot.as_of, fitted, model);
     const cost = planCostUsd(p, model, snapshot.as_of);
-    const verdict = verdictFor(v.valueIfLaunches, cost, model);
+    const verdict = verdictFor(v.launchOdds, v.valueIfLaunches, cost, model);
     return { p, v, cost, verdict };
   });
   scored.sort((a, b) => b.v.implied - a.v.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
@@ -1158,6 +1604,7 @@ export function buildBoard(snapshot: Snapshot, fitted: FittedModel, model: Model
       value_if_launches_usd: s.v.valueIfLaunches,
       launch_odds: round4(s.v.launchOdds),
       break_even_odds: round4(s.v.breakEvenOdds),
+      expected_value_usd: Math.round(expectedValue(s.v.launchOdds, s.v.valueIfLaunches, s.cost)),
       band_p25_usd: s.v.bandP25,
       band_p75_usd: s.v.bandP75,
       category_adjustment: s.v.adjustment,
@@ -1212,6 +1659,7 @@ export function radarRow(row: BoardRow, onWatchlist: boolean): RadarRow {
     value_if_launches_usd: row.model.value_if_launches_usd,
     launch_odds: row.model.launch_odds,
     break_even_odds: row.model.break_even_odds,
+    expected_value_usd: row.model.expected_value_usd,
     band_p25_usd: row.model.band_p25_usd,
     band_p75_usd: row.model.band_p75_usd,
     category_adjustment: row.model.category_adjustment,
@@ -1316,3 +1764,4 @@ export function boardIssue(board: BoardRow[], snapshot: Snapshot): string | null
 export function dataScript(radar: RadarData): string {
   return `window.RADAR=${JSON.stringify(radar)};\n`;
 }
+
