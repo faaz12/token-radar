@@ -151,7 +151,7 @@ tbody tr[data-selected="true"] { background: #14263d; }
   overflow-y: auto;
 }
 .detail[hidden] { display: none; }
-.detail { margin: 0 0 0 auto; max-height: 100%; }
+.detail { margin: 0 0 0 auto; max-height: 100%; width: min(600px, calc(100vw - 32px)); }
 .detail::backdrop { background: rgba(4, 8, 16, 0.6); }
 .detail-head { display: flex; align-items: start; justify-content: space-between; gap: var(--step-4); }
 .detail-head > div { min-width: 0; }
@@ -164,6 +164,7 @@ tbody tr[data-selected="true"] { background: #14263d; }
 .equation { display: grid; gap: var(--step-2); font-family: var(--font-num); font-size: 13px; }
 .equation div { display: flex; justify-content: space-between; gap: var(--step-3); }
 .equation span { color: var(--muted); }
+.equation b { overflow-wrap: anywhere; text-align: right; }
 .compbar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--border); margin-top: var(--step-3); }
 .compbar i { display: block; height: 100%; }
 .compbar .seg-base { background: var(--accent); }

@@ -1,16 +1,16 @@
-# Evaluation Charter v1.3 — Token Radar (radar-10)
+# Evaluation Charter v1.4 — Token Radar (radar-11)
 
-Locked **before** fitting radar-10. Any change after results creates a new
-charter version and labels the prior results **exploratory**. Radar-9 numbers
-were computed under charter v1.2; the evaluation procedure changed in v1.3
-(distribution-sensitivity tournament for the conditional launch value,
-horizon launch-probability with right-censoring, prespecified gate-policy
-test, heuristic-multiplier test, strict OOD tiers, leave-one-protocol-out
-influence, conformal slices, dated cohort dataset, valuation-radar /
-decision-engine split), so radar-9 numbers are **exploratory under v1.3**
-and must not be quoted as v1.3 results. Radar-9 is frozen in
-`hidden_files/radar-9-freeze/` (board, data, dossier, metrics,
-CHARTER-v1.2.md, FREEZE.md, snapshot sha256
+Locked **before** fitting radar-11. Any change after results creates a new
+charter version and labels the prior results **exploratory**. Radar-10 numbers
+were computed under charter v1.3; the evaluation procedure changed in v1.4
+(outlier audit with with/without analysis, ranking-stability evaluation,
+segmented OOD report, cap-as-risk-control stress test, outcome-vs-parameter
+uncertainty split, launch-probability labeling, per-protocol decision trace,
+single-final-artifact rerun, Gemini conditional-EV gate candidates (d)/(e),
+and the Rain winsorization candidate tested prespecified), so radar-10
+numbers are **exploratory under v1.4** and must not be quoted as v1.4
+results. Radar-10 is frozen in `hidden_files/radar-10-freeze/` (board, data,
+dossier, metrics, CHARTER-v1.3.md, FREEZE.md, snapshot sha256
 42a71213519479f3a180cc5010cbbf6bd18a2447fa0ad29e4c5122b6c9184393).
 
 ## Why v1.3 exists — the defect it fixes
@@ -48,6 +48,31 @@ submitting it, and both diagnosed the same root causes:
    a separate function with separate validation. v1.3 splits them on the
    dashboard and validates each on its own terms. The farm count is never
    a target and never a reason to change a rule.
+
+## Why v1.4 exists — the defect it fixes
+
+Under v1.3 the board still hinges on one outlier (LOPO: dropping rain moves
+a board row 0.68 dex; obol moves the slope 0.12), there is no evidence the
+ranking is stable, the OOD validation is thin and unsegmented (n = 28, and
+the in-distribution conformal slice is empty by construction), the cap is
+not yet shown as a risk control separate from model selection, the EV
+simulation does not separate outcome uncertainty from parameter/model
+uncertainty, the 16.4% launch odds are shown as if they were per-protocol,
+and no per-protocol decision trace exists. Two independent reviews of
+radar-10 (Q8) split: Gemini said YES to submitting now (academic rigor and
+audit transparency place it among the most mature entries if judges weigh
+methodology, even with 0 farms) and proposed (1) a conditional-on-launch EV
+gate as the primary hurdle with launch probability as risk-weighting, and
+(2) winsorizing/capping rain at the 95th percentile (~$1B–$1.5B); ChatGPT
+said NO (rain sensitivity, no ranking-stability evidence, limited/segmented
+OOD validation) and named the minimum conditions to change its verdict:
+finish the rain/obol audit, report ranking stability, state OOD honestly per
+group, and add a complete decision trace. Both agreed 0 FARM can be the
+honest output of the strict policy and that the policy must not be loosened
+merely to produce a target number of farms. v1.4 does ChatGPT's minimum
+conditions first and tests Gemini's two proposals as prespecified
+candidates — adopted only if the prespecified rule says so, never to hit a
+farm count.
 
 ## Question, target, grain, decision time
 
@@ -266,6 +291,19 @@ submitting it, and both diagnosed the same root causes:
     the protocol launches);
     (c) the P(loss) ceiling — FARM iff mean EV > 0 **and**
     P(negative return) ≤ 0.90.
+    (d) the Gemini conditional-EV hurdle with a risk ceiling (v1.4) —
+    FARM iff **conditional mean EV > 3× plan cost** AND
+    P(negative return) ≤ 0.85. The launch probability is a constant
+    (16.4%) for every row, so it cannot discriminate rows as a
+    risk-weighting; the discriminating risk term in (d) is P(negative
+    return), tightened to 0.85 from (c)'s 0.90. Policy (d) drops (b)'s
+    unconditional-mean-EV > 0 condition: a row whose conditional value is
+    large enough can farm even when its unconditional mean EV is negative
+    — that is exactly the conditional-on-launch definition Gemini
+    proposed, tested honestly with a real risk filter.
+    (e) the stricter conditional hurdle (v1.4) — FARM iff **conditional
+    mean EV > 5× plan cost** AND unconditional mean EV > 0 AND
+    P(negative return) ≤ 0.90.
     **Choice rule (prespecified, documented before the policy test runs):**
     a policy is eligible iff it (i) farms at least one row, (ii) rejects
     at least one row with mean EV > 0 through its additional condition
@@ -274,13 +312,13 @@ submitting it, and both diagnosed the same root causes:
     (a prespecified risk ceiling: a farm must be at most 90% likely to
     lose money). Among eligible policies, adopt the one with the **lowest
     maximum P(negative return)** among its FARM rows; ties go to (a),
-    then (b), then (c). If **no** policy is eligible, adopt (a) — the
+    then (b), then (c), then (d), then (e). If **no** policy is eligible, adopt (a) — the
     pre-existing rule — and report the resulting FARM count, even if
     zero. The FARM count is never a target and never a reason to change
-    the rule. The policy-test table (all three policies, FARM counts,
+    the rule. The policy-test table (all five policies, FARM counts,
     maximum P(negative) among FARM rows, rows farmed, eligibility) is
     published in the validation, together with the farm counts under each
-    of the five tournament distributions, so the reader can see how much
+    of the tournament distributions, so the reader can see how much
     of any farm list is a tail artifact.
   - **Marginal** iff the row is not FARM but ev_mean > 0 under the adopted
     p_L, or ev_mean ≤ 0 with break-even odds ≤ 33%. **Skip** otherwise. The
@@ -338,7 +376,7 @@ submitting it, and both diagnosed the same root causes:
 
 The production EV uses the capped lognormal (above). The tournament asks
 how the answer changes if the value distribution is different, on the
-same rows and the same launch odds. Five candidate distributions for the
+same rows and the same launch odds. Seven candidate distributions for the
 conditional launch value V, all centered on the fitted predictedLog with
 σ from the band (× the OOD multiplier), all simulated with common launch
 uniforms (the same u per draw) so the comparison is paired:
@@ -357,7 +395,11 @@ uniforms (the same u per draw) so the comparison is paired:
    but heavier tails.
 
 A sensitivity row is reported alongside: the capped lognormal with cap =
-the P90 of comp market caps. For each distribution, per audit row and
+the P90 of comp market caps. **v1.4 adds a second sensitivity row: the
+capped lognormal with cap = the P95 of comp market caps** — the cap
+Gemini proposed for rain (~$1B–$1.5B is the P95 band on this snapshot) —
+so the cap-sensitivity stress test (below) covers uncapped / P90 / P95 /
+max on the same rows and draws. For each distribution, per audit row and
 pooled over the audit rows: conditional mean value E[V | launch],
 conditional median value, P90/P95 value, mean net EV, median net return,
 P(negative return), and P(value covers plan cost | launch) = P(V >
@@ -469,6 +511,190 @@ separate validation:
    a threshold to look active: a 0-farm engine is reported as 0 farms,
    with the policy test showing why.
 
+## Outlier audit (v1.4) — rain and obol, to the data source
+
+The two LOPO-flagged comparables are audited to the data source, not
+merely labeled outliers. The audit table records, for each of rain and
+obol: slug, name, snapshot date (as_of 2026-11-14), listed_at, TVL in
+USD, market cap in USD, market-cap source (the snapshot's own source:
+DefiLlama, fetched 2026-11-14T01:18:33.201Z), main chain, category, the
+target definition (snapshot market cap = circulating-supply × price at
+the snapshot time), and the snapshot time. Four checks are answered from
+that table: (a) comparable by target definition and snapshot time — the
+protocol is listed before as_of and its market cap is recorded at as_of;
+(b) TVL consistent — TVL is positive, finite, and not a sentinel; (c)
+market cap, not FDV — the snapshot carries a market-cap field and no FDV
+field, so no FDV value can have entered the target; (d) valid
+observation vs measurement error or a structurally different case — the
+mcap/TVL ratio against the comp distribution (rain 400×, the highest of
+all comps; obol 0.0006×, the lowest), with the protocol's own facts
+stated (rain: Prediction Market on Arbitrum, listed 2025-10-28, TVL
+$6.6M against a $2.65B market cap; obol: Staking Pool on Ethereum,
+listed 2025-11-04, TVL $1.15B against a $0.72M market cap).
+**Rain is not deleted.** The with/without analysis refits the selected
+estimator without rain, without obol, and without both, and reports for
+each: the full-fit coefficients, the nested selection-pooled metric, the
+board Spearman ρ against the production board, the top-10/top-20 overlap,
+and the farm counts under the adopted gate. Both analyses are published;
+the production fit keeps rain unless the winsorization rule below fires.
+
+## Ranking stability (v1.4) — does the ranking survive a refit?
+
+A radar ranks; its error metrics are prediction metrics, not ranking
+evidence. v1.4 reports ranking stability on three axes, all from
+prespecified computations on the same splits:
+
+1. **Leave-one-protocol-out ranking:** for each of the 70 dropped
+   comparables, refit the selected estimator and re-rank the board by
+   implied value. Report per dropped comp and pooled: Spearman ρ against
+   the production board order, top-10 overlap, top-20 overlap, and
+   verdict-category moves (farm / marginal / skip changes). Verdict moves
+   are computed with the analytic EV — the closed-form mean of the capped
+   lognormal (see the parameter-uncertainty section) under the refit's
+   predicted logs — and the analytic verdict is cross-checked against the
+   production Monte Carlo verdict on the full fit: it must agree on every
+   board row, or disagree only where the analytic mean EV is within $5,000
+   of zero (Monte Carlo noise at a near-boundary row — the analytic and
+   simulated statistics describe the same distribution, and 20,000 draws
+   cannot resolve a sign that close to zero). A disagreement outside that
+   tolerance fails the build.
+2. **Nested walk-forward ranking:** for each nested fold (50–90), the
+   Spearman ρ between the fold's predicted log values and the test rows'
+   actual log market caps, and the top-3 overlap between the predicted
+   and actual orderings of the fold's 7 test rows; pooled across folds.
+   This answers whether protocols the model values more highly actually
+   turn out to be worth more.
+3. **TVL perturbation:** for each board row, perturb its TVL by +10% and
+   by −10% (row-local: the comps and their adjustments do not change) and
+   recompute its predicted log (pred + coef × log10(1.1) and pred +
+   coef × log10(0.9)) and its rank. Report the count of rows whose rank
+   changes under each shock and the maximum rank move.
+
+Descriptive bars (reported, not gates — no production decision changes on
+them): LOPO median Spearman ≥ 0.90, worst LOPO top-10 overlap ≥ 7 of 10,
+and TVL-perturbation rank moves on ≤ 5 rows. The numbers are published
+whether or not the bars are met.
+
+## Segmented OOD report (v1.4) — coverage per group, honestly labeled
+
+The v1.3 OOD multiplier validation pooled all OOD test rows (n = 28) and
+called ×1.0 "validated" — on 28 rows that is a measurement, not a
+validation. v1.4 segments the nested test rows (all 5 folds, 35 rows),
+each classified relative to its own fold's training domain, into:
+in-distribution (0 flags); unseen-chain-only (only the chain flag);
+unseen-category-only (only the category flag); partial-other (exactly 1
+flag of the TVL / age / nearest-comparable kind); major (≥ 2 flags).
+For each segment: n, nominal 50% coverage, observed 50% coverage against
+the base band (no multiplier, consistent with the conformal slices),
+median effective band halfwidth in dex, and median signed residual in
+dex. **Segments with n < 10 are labeled "insufficient evidence — no
+validation claim"**, never described as validated. The adopted OOD
+multiplier stays ×1.0 under the v1.3 prespecified rule (the smallest
+multiplier whose OOD coverage reaches nominal − 0.10 on the selection
+folds), and its label is corrected: it is the smallest multiplier
+meeting the prespecified bar on the available n = 28 OOD test rows, with
+a wide Wilson interval — a measurement, not a validated guarantee.
+Polymarket stays exploratory extrapolation (partial OOD, unseen chain),
+never an OOD success example.
+
+## Cap as risk control (v1.4) — separated from model selection
+
+The production cap (the maximum market cap observed among the 70 dated
+comparables, $2,646,363,290 on this snapshot) was chosen on principle
+**before any validation outcome was computed**: it is a property of the
+training population, not of a test result. The CRPS check came after and
+did not select the cap — it only gates the keep/revert decision (revert
+to the uncapped lognormal if the capped CRPS is worse than the uncapped
+by > 10%). The cap is a **risk control**, not a model-selection claim:
+the capped CRPS (0.5065 dex) is slightly **worse** than the uncapped
+(0.5058 dex) on n = 28, so no claim is made that the capped distribution
+is more accurate — only that it bounds the tail risk the farm decision
+rests on. The stress test reports, on the same audit rows and the same
+draws: uncapped / P90-cap / P95-cap / max-cap — pooled conditional mean
+value, pooled mean net EV, farm counts under each of the five gate
+policies, and Polymarket's central EV per cap. If the farm counts move
+materially across caps, the farm list is cap-sensitive and the report
+says so.
+
+## Parameter uncertainty (v1.4) — outcome vs model uncertainty, split
+
+The printed value band is the outcome-only cross-conformal band: it
+covers the residual of one draw, not the uncertainty in the model
+itself. v1.4 measures the model uncertainty separately and reports it
+alongside, never merged into the printed band. Method: the existing
+200-refit bootstrap (fixed seed 20261119, resampling the 70 dated comps
+with replacement, refitting the selected estimator) is extended from the
+comps to the board — for each refit, every board row is re-predicted, so
+each row carries a **parameter SD in dex** (the standard deviation of its
+predicted log across the 200 refits), and the coefficient distribution
+(intercept and slope: mean, SD, 95% interval) is published. For the EV
+audit rows, a second simulation folds the parameter uncertainty into the
+value draw: log10(V) = pred + paramSD·w + σ·z with w, z independent
+standard normals, so the total value SD is √(σ² + paramSD²) — exact for
+the lognormal family, same seed, same launch uniforms — reporting
+ev_mean_param_usd and prob_negative_param_usd next to the outcome-only
+numbers. The closed form used by the ranking-stability verdict moves is
+E[min(cap, 10^Y)] with Y ~ N(μ, σ²) in dex: 10^(μ + ½·ln10·σ²) ·
+Φ((log10(cap) − μ − ln10·σ²)/σ) + cap · (1 − Φ((log10(cap) − μ)/σ)).
+**Outcome-only intervals are not full uncertainty**: a simulation that
+holds the parameters fixed and randomizes only launch and value cannot
+be read as the total uncertainty of the farm decision, and the dashboard
+labels which is which.
+
+## Launch-probability labeling (v1.4) — a base rate, labeled as one
+
+The 16.4% launch odds are a **global cohort base rate**, not a
+per-protocol probability. Every board row now carries its labeling:
+probability source ("global_base_rate"), cohort ("all 645 dated
+protocols at as_of"), prediction horizon (12 months), the number of
+observations supporting the rate (645), and whether the row's protocol
+is in the fully-observed 12-month risk set (listed ≥ 12 months before
+as_of; 485 protocols, launch rate 19.2% — an upper bound, since launch
+timing is unidentified). The label appears wherever the odds appear
+(board detail, EV audit, dashboard). Small-sample caveat, stated: the
+survival candidate (n = 31) and the heuristic multiplier (n = 100) tests
+are underpowered — in the available evaluation sample they did not beat
+the baseline, and the sample is too small to conclude the models are
+useless.
+
+## Decision trace (v1.4) — every verdict explains itself
+
+Every board row carries a decision trace — the reasons for its verdict,
+computed from the same numbers as the verdict (no separate logic), in
+fixed order: the sign of the mean EV; the conditional mean EV against
+the 3× plan-cost hurdle; the P25 gate (which always fails, with the
+structural reason: P25 > 0 needs P(net return > 0) ≥ 75% while p_L =
+16.4%); the P(negative return) value; the OOD tier and which flags
+fired; the conservative-gate result; and the verdict with its rule. The
+trace is shown in the detail drawer and in the EV audit rows. A row
+whose verdict cannot be reconstructed from its trace fails the build.
+
+## Winsorization candidate (v1.4) — tested prespecified, adopted only on evidence
+
+Gemini proposed winsorizing/capping rain at the 95th percentile
+(~$1B–$1.5B). The candidate: winsorize the dated comparables' market
+caps at the P95 of comp market caps before fitting (each comp's mcap
+capped at P95; the snapshot itself is never modified — the winsorized
+fit is a candidate computed from the sealed snapshot, not a new input).
+Report: the winsorized full fit (intercept, slope), its nested
+selection-pooled metric on identical folds, its LOPO maximum
+|Δpredicted log|, the board Spearman ρ and top-10/top-20 overlap
+against the production board, and the farm counts under the adopted
+gate. **Adoption rule (prespecified, before results): the winsorized fit
+becomes the production fit only if its nested selection-pooled metric
+improves on production's by > 0.01 dex.** Otherwise production stays
+unwinsorized and the winsorized variant is reported as a sensitivity
+only. The valuation fit stays OLS 3.7686/0.4105 unless this rule fires.
+
+## Single final artifact (v1.4)
+
+board.json, data.js, the dashboard, the screenshots, dossier.json, and
+ev-simulation-polymarket.json all come from **one** buildRadar call on
+the same sealed snapshot and the same seeds. The build is run twice and
+must be byte-identical; any post-build edit re-runs the whole build.
+No number in the state file, the README, or the dashboard is typed by
+hand — all are read from the build output.
+
 ## Tuning boundary and final holdout
 
 - The floor, the purge gap, the ridge λ, the verdict thresholds and the
@@ -564,12 +790,15 @@ separate validation:
   training range, nearest comparable > 0.5 dex away) carry an extrapolation
   warning and a validated band multiplier; major-OOD rows are unsupported
   extrapolations and can never be a production FARM.
-- **v1.3 additions:** the 12-month launch rate is an upper bound, not a
-  rate — the snapshot records no token launch date, so launch timing inside
-  the window is unidentified; the activity multiplier is a TVL-growth
-  proxy, not Gemini's points-program/testnet feature, because the snapshot
-  carries no such field; the capped-lognormal cap is the largest launch
-  value ever observed in training ($2,646,363,290 on this snapshot), so
-  values above the largest observed launch are never simulated; the
-  distribution tournament shows how much of any farm list is a tail
-  artifact, and no decision rests on the uncapped lognormal mean alone.
+- **v1.4 additions:** the outlier audit reports rain and obol with and
+  without the outlier, and rain stays in the production fit unless the
+  prespecified winsorization rule fires; ranking stability is reported
+  on three axes with descriptive bars, not gates; the OOD multiplier
+  ×1.0 is a measurement on n = 28, not a validated guarantee, and
+  segments with n < 10 carry no validation claim; the cap is a risk
+  control, not a model-selection claim — the capped CRPS is slightly
+  worse than the uncapped, so the cap bounds tail risk without claiming
+  better accuracy; the printed band is outcome-only and the parameter
+  uncertainty is reported alongside it; the 16.4% launch odds are a
+  global cohort base rate, labeled with cohort, horizon, and supporting
+  n on every row; every verdict carries a decision trace.
