@@ -1,11 +1,11 @@
-// Token Radar's entrypoint (radar-2, Node 22, standard library only).
+// Token Radar's entrypoint (radar-3, Node 22, standard library only).
 //
 // Reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), scores every
-// pre-token protocol with the comparables model in lib/model.ts, writes the ranked board to
-// /output/board.json, writes the dashboard's data to /output/data.js, copies this repository's
-// dashboard/ and screenshots/ to /output, and writes /output/dossier.json with the vendored
-// make.fun library. Runs twice and must write the same bytes both times: the model is pure
-// arithmetic on the snapshot, with no clock, no randomness and no network.
+// pre-token protocol with the fitted log-log regression in lib/model.ts, writes the ranked
+// board to /output/board.json, writes the dashboard's data to /output/data.js, copies this
+// repository's dashboard/ and screenshots/ to /output, and writes /output/dossier.json with
+// the vendored make.fun library. Runs twice and must write the same bytes both times: the
+// model is pure arithmetic on the snapshot, with no clock, no randomness and no network.
 //
 // The dashboard is a static page, no framework and no network: dashboard/index.html,
 // dashboard/app.css and dashboard/app.js read /output/data.js, which this program writes from
